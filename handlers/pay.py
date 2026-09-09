@@ -2093,7 +2093,7 @@ async def show_existing_manual(
     purchase,
     file,
 ):
-    """Resend the stored Manual QR for an existing pending transaction."""
+    """Send the configured Manual QR for an existing pending purchase."""
     pool = await database_pool()
 
     enabled = str(
@@ -2103,18 +2103,6 @@ async def show_existing_manual(
         ) or "off"
     ).lower() in {"on", "1", "true", "yes"}
 
-    qr_chat = safe_int(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_chat_id",
-        )
-    )
-    qr_msg = safe_int(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_message_id",
-        )
-    )
     qr_file_id = str(
         await pool.fetchval(
             "SELECT value FROM settings WHERE key=$1",
@@ -2122,33 +2110,33 @@ async def show_existing_manual(
         ) or ""
     ).strip()
 
-    if not enabled:
+    if not enabled or not qr_file_id:
         return await call.message.answer(
-            "❌ Pembayaran manual sedang tidak tersedia."
+            "❌ QR manual belum tersedia. Admin perlu mengatur QR Manual terlebih dahulu."
         )
 
-    if not qr_chat or not qr_msg:
-        return await call.message.answer(
-            "❌ QR manual belum dikonfigurasi."
-        )
-
-    keyboard = await manual_payment_keyboard(file["code"])
+    code = str(file.get("code") or "").strip()
     price = safe_int(file.get("price"))
+    keyboard = await manual_payment_keyboard(code)
 
     caption = (
         "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
-        f"📄 <b>{clean_html(file.get('title'))}</b>\n\n"
-        f"🔑 Code:\n<code>{clean_html(file['code'])}</code>\n\n"
-        f"💰 <b>{format_rupiah(price)}</b>\n\n"
-        "Scan QR manual di atas.\n\n"
-        "Setelah pembayaran, tekan <b>✅ Saya Sudah Bayar</b>."
+        f"📄 File:\n<b>{clean_html(file.get('title'))}</b>\n\n"
+        f"🔑 Code:\n<code>{clean_html(code)}</code>\n\n"
+        f"💰 Harga:\n<b>{format_rupiah(price)}</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📌 <b>Cara Pembayaran</b>\n\n"
+        "1️⃣ Scan QR manual\n"
+        "2️⃣ Bayar sesuai nominal\n"
+        "3️⃣ Pastikan pembayaran berhasil\n"
+        "4️⃣ Tekan <b>✅ Saya Sudah Bayar</b>\n\n"
+        "⚠️ Setelah menekan tombol, admin akan memverifikasi pembayaran."
     )
 
     try:
-        msg = await call.bot.copy_message(
-            chat_id=call.message.chat.id,
-            from_chat_id=qr_chat,
-            message_id=qr_msg,
+        msg = await call.bot.send_photo(
+            chat_id=call.from_user.id,
+            photo=qr_file_id,
             caption=caption,
             parse_mode="HTML",
             reply_markup=keyboard,
@@ -2165,60 +2153,33 @@ async def show_existing_manual(
         )
         return
     except Exception:
-        logger.exception(
-            "SEND EXISTING MANUAL COPY ERROR | chat=%s msg=%s",
-            qr_chat,
-            qr_msg,
+        logger.exception("SEND EXISTING MANUAL QR FILE_ID ERROR")
+
+    # If the stored file is a Telegram document rather than a photo.
+    try:
+        msg = await call.bot.send_document(
+            chat_id=call.from_user.id,
+            document=qr_file_id,
+            caption=caption,
+            parse_mode="HTML",
+            reply_markup=keyboard,
         )
-
-    # Fallback: gunakan file_id yang disimpan ketika admin mengirim QR.
-    if qr_file_id:
-        try:
-            msg = await call.bot.send_photo(
-                chat_id=call.message.chat.id,
-                photo=qr_file_id,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            await execute(
-                """
-                UPDATE file_purchases
-                SET qr_message_id=$1, qr_chat_id=$2
-                WHERE id=$3 AND status='pending'
-                """,
-                msg.message_id,
-                msg.chat.id,
-                purchase["id"],
-            )
-            return
-        except Exception:
-            logger.exception("SEND EXISTING MANUAL PHOTO FALLBACK ERROR")
-
-        try:
-            msg = await call.bot.send_document(
-                chat_id=call.message.chat.id,
-                document=qr_file_id,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-            await execute(
-                """
-                UPDATE file_purchases
-                SET qr_message_id=$1, qr_chat_id=$2
-                WHERE id=$3 AND status='pending'
-                """,
-                msg.message_id,
-                msg.chat.id,
-                purchase["id"],
-            )
-            return
-        except Exception:
-            logger.exception("SEND EXISTING MANUAL DOCUMENT FALLBACK ERROR")
+        await execute(
+            """
+            UPDATE file_purchases
+            SET qr_message_id=$1, qr_chat_id=$2
+            WHERE id=$3 AND status='pending'
+            """,
+            msg.message_id,
+            msg.chat.id,
+            purchase["id"],
+        )
+        return
+    except Exception:
+        logger.exception("SEND EXISTING MANUAL QR DOCUMENT ERROR")
 
     return await call.message.answer(
-        "❌ Gagal mengirim QR manual. Pastikan QR masih tersimpan."
+        "❌ QR Manual gagal dikirim. File ID QR yang tersimpan tidak dapat digunakan oleh bot."
     )
 
 # ============================================================
@@ -2658,67 +2619,81 @@ async def send_manual_payment(
     purchase,
     file,
 ):
-    pool=await get_pool_local()
-    enabled=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "payment_manual_enabled") or "on").lower() in {"on","1","true","yes"}
-    qr_chat=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"))
-    qr_msg=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
-    if not enabled or not qr_chat or not qr_msg:
-        return await call.message.answer("❌ QR manual belum tersedia.")
-    code = str(
-        file.get("code")
-        or ""
+    """Create a manual payment and send the configured QR directly by file_id."""
+    pool = await get_pool_local()
+
+    enabled = str(
+        await pool.fetchval(
+            "SELECT value FROM settings WHERE key=$1",
+            "payment_manual_enabled",
+        ) or "off"
+    ).lower() in {"on", "1", "true", "yes"}
+
+    qr_file_id = str(
+        await pool.fetchval(
+            "SELECT value FROM settings WHERE key=$1",
+            "manual_qr_file_id",
+        ) or ""
     ).strip()
-    price = safe_int(
-        file.get("price")
+
+    if not enabled or not qr_file_id:
+        return await call.message.answer(
+            "❌ QR manual belum tersedia. Admin perlu mengatur QR Manual terlebih dahulu."
+        )
+
+    code = str(file.get("code") or "").strip()
+    price = safe_int(file.get("price"))
+    keyboard = await manual_payment_keyboard(code)
+
+    caption = (
+        "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
+        f"📄 File:\n<b>{clean_html(file.get('title'))}</b>\n\n"
+        f"🔑 Code:\n<code>{clean_html(code)}</code>\n\n"
+        f"💰 Harga:\n<b>{format_rupiah(price)}</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📌 <b>Cara Pembayaran</b>\n\n"
+        "1️⃣ Scan QR manual\n"
+        "2️⃣ Bayar sesuai nominal\n"
+        "3️⃣ Pastikan pembayaran berhasil\n"
+        "4️⃣ Tekan <b>✅ Saya Sudah Bayar</b>\n\n"
+        "⚠️ Setelah menekan tombol, admin akan memverifikasi pembayaran."
     )
-    keyboard = await manual_payment_keyboard(
-        code
-    )
+
     try:
-        msg = await call.bot.copy_message(
-            chat_id=call.message.chat.id,
-            from_chat_id=qr_chat,
-            message_id=qr_msg,
-            caption=(
-                "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
-                f"📄 File:\n"
-                f"<b>{clean_html(file.get('title'))}</b>\n\n"
-                f"🔑 Code:\n"
-                f"<code>{clean_html(code)}</code>\n\n"
-                f"💰 Harga:\n"
-                f"<b>{format_rupiah(price)}</b>\n\n"
-                "━━━━━━━━━━━━━━━━━━\n"
-                "📌 <b>Cara Pembayaran</b>\n\n"
-                "1️⃣ Scan QR manual\n"
-                "2️⃣ Bayar sesuai nominal\n"
-                "3️⃣ Pastikan pembayaran berhasil\n"
-                "4️⃣ Tekan <b>✅ Saya Sudah Bayar</b>\n\n"
-                "⚠️ Setelah menekan tombol, admin akan "
-                "memverifikasi pembayaran."
-            ),
+        msg = await call.bot.send_photo(
+            chat_id=call.from_user.id,
+            photo=qr_file_id,
+            caption=caption,
             parse_mode="HTML",
             reply_markup=keyboard,
         )
-        await execute(
-            """
-            UPDATE file_purchases
-            SET
-                qr_message_id=$1,
-                qr_chat_id=$2
-            WHERE id=$3
-              AND status='pending'
-            """,
-            msg.message_id,
-            msg.chat.id,
-            purchase["id"],
-        )
     except Exception:
-        logger.exception(
-            "SEND MANUAL PAYMENT ERROR"
-        )
-        return await call.message.answer(
-            "❌ Gagal mengirim QR manual."
-        )
+        logger.exception("SEND MANUAL QR FILE_ID ERROR")
+        try:
+            msg = await call.bot.send_document(
+                chat_id=call.from_user.id,
+                document=qr_file_id,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logger.exception("SEND MANUAL QR DOCUMENT ERROR")
+            return await call.message.answer(
+                "❌ QR Manual gagal dikirim. QR tersimpan, tetapi Telegram menolak File ID tersebut."
+            )
+
+    await execute(
+        """
+        UPDATE file_purchases
+        SET qr_message_id=$1, qr_chat_id=$2
+        WHERE id=$3 AND status='pending'
+        """,
+        msg.message_id,
+        msg.chat.id,
+        purchase["id"],
+    )
+
 # ============================================================
 # CLAIM PURCHASE PAID
 # ============================================================
