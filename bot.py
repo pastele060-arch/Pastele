@@ -7,6 +7,7 @@ from middlewares.ban import BanMiddleware
 from middlewares.maintenance import MaintenanceMiddleware
 from middlewares.ratelimit import RateLimitMiddleware
 from middlewares.loading import CallbackLoadingMiddleware
+from middlewares.message_loading import MessageLoadingMiddleware
 from utils.telegram_safe import install_telegram_edit_guards
 # Install before routers are imported so every direct aiogram edit call is protected.
 install_telegram_edit_guards()
