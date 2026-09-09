@@ -23,6 +23,8 @@ from database import fetchrow, fetch, execute
 from utils.media_sender import safe_copy_from_storage
 from utils.redis_client import safe_set, safe_get
 from utils.cashi import Cashi
+from utils.user_lang import get_user_language
+from utils.user_lang import get_user_language
 from config import (
     STORAGE_CHANNEL_ID,
     NOTIF_CHANNEL_ID,
@@ -747,46 +749,39 @@ async def show_payment_loading(
 # ============================================================
 # PAYMENT KEYBOARD
 # ============================================================
-def payment_method_keyboard(
-    code: str,
-):
-    buttons = []
-    # Two automatic QR gateways. They are independent, so one outage
-    # does not disable the other.
-    if AUTO_PAYMENT_ENABLED:
-        buttons.append([
-            InlineKeyboardButton(
-                text="📲 QR Otomatis 1 • Cashi",
-                callback_data=f"cashi:{code}",
-            ),
-            InlineKeyboardButton(
-                text="⚡ QR Otomatis 2 • BayarGG",
-                callback_data=f"bayargg:{code}",
-            ),
-        ])
-    if MANUAL_PAYMENT_ENABLED:
-        buttons.append([
-            InlineKeyboardButton(
-                text="📷 QR Manual",
-                callback_data=f"manual:{code}",
-            )
-        ])
-    if not buttons:
-        buttons.append([
-            InlineKeyboardButton(
-                text="❌ Pembayaran Tidak Tersedia",
-                callback_data="none",
-            )
-        ])
-    buttons.append([
-        InlineKeyboardButton(
-            text="❌ Batal",
-            callback_data="close",
-        )
-    ])
-    return InlineKeyboardMarkup(
-        inline_keyboard=buttons
-    )
+async def payment_method_keyboard(code: str, user_id: int | None = None):
+    """Build payment methods from DB settings so admin can enable/disable them live."""
+    lang = await get_user_language(user_id) if user_id else "id"
+    pool = await database_pool()
+    def on(key, default="on"):
+        return True
+    async def setting(key, default="on"):
+        value = await pool.fetchval("SELECT value FROM settings WHERE key=$1", key)
+        return str(value if value is not None else default).lower() in {"on","1","true","yes"}
+    cashi_on = await setting("payment_cashi_enabled", "on") and AUTO_PAYMENT_ENABLED
+    bayargg_on = await setting("payment_bayargg_enabled", "on") and bool(os.getenv("BAYARGG_API_KEY", "").strip())
+    manual_on = await setting("payment_manual_enabled", "on") and bool(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    # Binance/USDT is handled manually by the owner via Telegram @ownergbot.
+    binance_on = await setting("payment_binance_enabled", "off")
+    L={
+      "id":("💳 Pembayaran", "📲 QR Otomatis 1 • Cashi", "⚡ QR Otomatis 2 • BayarGG", "📷 QR Manual", "₿ Binance / USDT", "❌ Batal", "❌ Pembayaran Tidak Tersedia"),
+      "en":("💳 Payment", "📲 Automatic QR 1 • Cashi", "⚡ Automatic QR 2 • BayarGG", "📷 Manual QR", "₿ Binance / USDT", "❌ Cancel", "❌ Payment Unavailable"),
+      "zh":("💳 支付", "📲 自动二维码 1 • Cashi", "⚡ 自动二维码 2 • BayarGG", "📷 手动二维码", "₿ Binance / USDT", "❌ 取消", "❌ 暂无可用支付方式")
+    }[lang]
+    buttons=[]
+    if cashi_on: buttons.append([InlineKeyboardButton(text=L[1], callback_data=f"cashi:{code}")])
+    if bayargg_on: buttons.append([InlineKeyboardButton(text=L[2], callback_data=f"bayargg:{code}")])
+    if manual_on: buttons.append([InlineKeyboardButton(text=L[3], callback_data=f"manual:{code}")])
+    if binance_on:
+        buttons.append([InlineKeyboardButton(text=L[4], url="https://t.me/ownergbot")])
+    if not buttons: buttons.append([InlineKeyboardButton(text=L[6], callback_data="none")])
+    buttons.append([InlineKeyboardButton(text=L[5], callback_data="close")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+async def database_pool():
+    from database import get_pool
+    return await get_pool()
+
 # ============================================================
 # PAYMENT ENTRY
 # ============================================================
@@ -884,7 +879,11 @@ async def choose_payment(
                 active_rows[0],
                 file,
             )
-        if "cashi" in methods or "manual" in methods:
+        if methods == {"binance"}:
+            return await show_existing_binance(call, active_rows[0], file)
+        if methods == {"binance"}:
+            return await show_existing_binance(call, active_rows[0], file)
+        if "cashi" in methods or "manual" in methods or "binance" in methods:
             await call.message.answer(
                 (
                     "⏳ <b>Kamu sudah memiliki pembayaran "
@@ -893,25 +892,20 @@ async def choose_payment(
                     "metode pembayaran di bawah."
                 ),
                 parse_mode="HTML",
-                reply_markup=payment_method_keyboard(
-                    code
+                reply_markup=await payment_method_keyboard(
+                    code, call.from_user.id
                 ),
             )
             return
-    await call.message.answer(
-        (
-            "💳 <b>PILIH METODE PEMBAYARAN</b>\n\n"
-            f"📄 File:\n"
-            f"<b>{clean_html(file.get('title'))}</b>\n\n"
-            f"💰 Harga:\n"
-            f"<b>{format_rupiah(price)}</b>\n\n"
-            "Silakan pilih metode pembayaran:"
-        ),
-        parse_mode="HTML",
-        reply_markup=payment_method_keyboard(
-            code
-        ),
-    )
+    lang = await get_user_language(call.from_user.id)
+    title = clean_html(file.get("title"))
+    price_text = format_rupiah(price)
+    chooser = {
+      "id": f"🔒 <b>CODE BERBAYAR</b>\n\n💳 <b>Pembayaran diperlukan untuk membuka code ini.</b>\n\n📄 File: <b>{title}</b>\n💰 Harga: <b>{price_text}</b>\n\nSilakan pilih metode pembayaran:",
+      "en": f"🔒 <b>PAID CODE</b>\n\n💳 <b>Payment is required to open this code.</b>\n\n📄 File: <b>{title}</b>\n💰 Price: <b>{price_text}</b>\n\nChoose a payment method:",
+      "zh": f"🔒 <b>付费代码</b>\n\n💳 <b>打开此代码需要付款。</b>\n\n📄 文件：<b>{title}</b>\n💰 价格：<b>{price_text}</b>\n\n请选择支付方式："
+    }[lang]
+    await call.message.answer(chooser, parse_mode="HTML", reply_markup=await payment_method_keyboard(code, call.from_user.id))
 # ============================================================
 # BUY ALIAS
 # ============================================================
@@ -977,6 +971,33 @@ async def cashi_payment(
         code,
         file,
     )
+# ============================================================
+# BINANCE / USDT ENTRY
+# ============================================================
+@router.callback_query(F.data.startswith("binance:"))
+async def binance_payment(call: CallbackQuery):
+    # Kept only for old/stale messages containing the previous callback.
+    # New payment keyboards use a direct Telegram URL to @ownergbot.
+    lang = await get_user_language(call.from_user.id)
+    text = {
+        "id": "₿ <b>BINANCE / USDT</b>\n\nSilakan hubungi admin untuk pembayaran Binance / USDT.",
+        "en": "₿ <b>BINANCE / USDT</b>\n\nPlease contact the admin for Binance / USDT payment.",
+        "zh": "₿ <b>BINANCE / USDT</b>\n\n如需使用 Binance / USDT 付款，请联系管理员。",
+    }[lang]
+    button = {
+        "id": "💬 Hubungi Admin",
+        "en": "💬 Contact Admin",
+        "zh": "💬 联系管理员",
+    }[lang]
+    await call.answer()
+    return await call.message.answer(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=button, url="https://t.me/ownergbot")],
+            [InlineKeyboardButton(text={"id":"❌ Batal","en":"❌ Cancel","zh":"❌ 取消"}[lang], callback_data="close")],
+        ])
+    )
+
 # ============================================================
 # MANUAL ENTRY
 # ============================================================
@@ -1911,8 +1932,8 @@ async def show_existing_cashi(
                         "Silakan pilih metode pembayaran baru."
                     ),
                     parse_mode="HTML",
-                    reply_markup=payment_method_keyboard(
-                        file["code"]
+                    reply_markup=await payment_method_keyboard(
+                        file["code"], call.from_user.id
                     ),
                 )
     qr_url = str(
@@ -2044,8 +2065,10 @@ async def show_existing_manual(
         file.get("price")
     )
     try:
-        msg = await call.message.answer_photo(
-            photo=MANUAL_QR_FILE_ID,
+        msg = await call.bot.copy_message(
+            chat_id=call.message.chat.id,
+            from_chat_id=qr_chat,
+            message_id=qr_msg,
             caption=(
                 "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
                 f"📄 <b>{clean_html(file.get('title'))}</b>\n\n"
@@ -2218,8 +2241,8 @@ async def create_cashi_payment(
                     "Silakan pilih metode pembayaran lain."
                 ),
                 parse_mode="HTML",
-                reply_markup=payment_method_keyboard(
-                    code
+                reply_markup=await payment_method_keyboard(
+                    code, call.from_user.id
                 ),
             )
         # Unknown result:
@@ -2264,8 +2287,8 @@ async def create_cashi_payment(
                 "❌ Cashi tidak mengembalikan "
                 "ID transaksi yang valid."
             ),
-            reply_markup=payment_method_keyboard(
-                code
+            reply_markup=await payment_method_keyboard(
+                code, call.from_user.id
             ),
         )
     qr_url = extract_cashi_qr_url(
@@ -2434,10 +2457,12 @@ async def create_manual_payment(
     code: str,
     file,
 ):
-    if not MANUAL_PAYMENT_ENABLED:
-        return await call.message.answer(
-            "❌ QR manual belum dikonfigurasi."
-        )
+    pool=await get_pool_local()
+    enabled=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "payment_manual_enabled") or "on").lower() in {"on","1","true","yes"}
+    qr_chat=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"))
+    qr_msg=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    if not enabled or not qr_chat or not qr_msg:
+        return await call.message.answer("❌ QR manual belum dikonfigurasi.")
     user_id = int(
         call.from_user.id
     )
@@ -2514,10 +2539,12 @@ async def send_manual_payment(
     purchase,
     file,
 ):
-    if not MANUAL_PAYMENT_ENABLED:
-        return await call.message.answer(
-            "❌ QR manual belum tersedia."
-        )
+    pool=await get_pool_local()
+    enabled=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "payment_manual_enabled") or "on").lower() in {"on","1","true","yes"}
+    qr_chat=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"))
+    qr_msg=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    if not enabled or not qr_chat or not qr_msg:
+        return await call.message.answer("❌ QR manual belum tersedia.")
     code = str(
         file.get("code")
         or ""
@@ -2529,8 +2556,10 @@ async def send_manual_payment(
         code
     )
     try:
-        msg = await call.message.answer_photo(
-            photo=MANUAL_QR_FILE_ID,
+        msg = await call.bot.copy_message(
+            chat_id=call.message.chat.id,
+            from_chat_id=qr_chat,
+            message_id=qr_msg,
             caption=(
                 "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
                 f"📄 File:\n"
@@ -2886,8 +2915,8 @@ async def check_cashi_payment(
                 "Silakan melakukan pembayaran baru."
             ),
             parse_mode="HTML",
-            reply_markup=payment_method_keyboard(
-                code
+            reply_markup=await payment_method_keyboard(
+                code, call.from_user.id
             ),
         )
     return await call.message.answer(
@@ -3507,7 +3536,7 @@ async def approve_manual(
         SET status='verifying'
         WHERE id=$1
           AND status='pending'
-          AND payment_id LIKE 'MANUAL-%'
+          AND (payment_id LIKE 'MANUAL-%' OR payment_id LIKE 'BINANCE-%')
         RETURNING *
         """,
         purchase_id,
@@ -3762,7 +3791,7 @@ async def reject_manual(
         FROM file_purchases
         WHERE id=$1
           AND status='pending'
-          AND payment_id LIKE 'MANUAL-%'
+          AND (payment_id LIKE 'MANUAL-%' OR payment_id LIKE 'BINANCE-%')
         LIMIT 1
         """,
         purchase_id,
@@ -3885,7 +3914,7 @@ async def receive_reject_reason(
         SET status='rejected'
         WHERE id=$1
           AND status='pending'
-          AND payment_id LIKE 'MANUAL-%'
+          AND (payment_id LIKE 'MANUAL-%' OR payment_id LIKE 'BINANCE-%')
         RETURNING *
         """,
         purchase_id,

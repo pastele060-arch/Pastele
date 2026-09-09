@@ -751,6 +751,13 @@ async def process_code(
 # RECEIVE CODE
 # ============================================================
 
+@router.callback_query(F.data.startswith("grantopen:"))
+async def grant_open_code(call: CallbackQuery):
+    code = call.data.split(":", 1)[1].strip()
+    await safe_callback_answer(call, "⏳")
+    await process_code(call.message, code)
+
+
 @router.message(
     StateFilter(
         GetFileState.waiting_code
