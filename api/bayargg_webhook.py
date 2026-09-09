@@ -184,6 +184,35 @@ async def webhook(request: Request):
         }
 
     # =========================
+    # CEK CREATOR PAYMENT
+    # =========================
+    creator_tx = await fetchrow(
+        """SELECT * FROM creator_upgrade_payments
+           WHERE provider_invoice=$1 AND provider='bayargg' AND status='pending'
+           LIMIT 1""", invoice_id
+    )
+    if creator_tx:
+        updated = await execute(
+            """UPDATE creator_upgrade_payments
+               SET status='approved', paid_at=NOW(), reviewed_at=NOW()
+               WHERE id=$1 AND status='pending'""", creator_tx["id"]
+        )
+        if updated != "UPDATE 0":
+            await execute(
+                """UPDATE users SET is_creator=TRUE, creator_status='approved', creator_verified_at=NOW(), updated_at=NOW()
+                   WHERE user_id=$1""", creator_tx["user_id"]
+            )
+            try:
+                await bot.send_message(
+                    creator_tx["user_id"],
+                    "🎉 <b>Creator berhasil diaktifkan!</b>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                logger.exception("creator notify failed")
+        return {"success": True, "message": "creator activated"}
+
+    # =========================
     # CEK FILE PAYMENT
     # =========================
 
