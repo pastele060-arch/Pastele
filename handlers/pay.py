@@ -1142,8 +1142,6 @@ async def get_or_create_purchase(
                 NULL,
                 NULL
             )
-            ON CONFLICT (user_id, file_code)
-            DO NOTHING
             RETURNING *
             """,
             user_id,
