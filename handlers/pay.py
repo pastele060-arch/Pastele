@@ -24,7 +24,6 @@ from utils.media_sender import safe_copy_from_storage
 from utils.redis_client import safe_set, safe_get
 from utils.cashi import Cashi
 from utils.user_lang import get_user_language
-from utils.user_lang import get_user_language
 from config import (
     STORAGE_CHANNEL_ID,
     NOTIF_CHANNEL_ID,
@@ -572,7 +571,7 @@ async def get_file_by_code(
         """
         SELECT *
         FROM files
-        WHERE code=$1
+        WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
         LIMIT 1
         """,
         code,
@@ -598,7 +597,7 @@ async def get_active_purchase(
         SELECT *
         FROM file_purchases
         WHERE user_id=$1
-          AND file_code=$2
+          AND LOWER(TRIM(file_code)) = LOWER(TRIM($2))
           AND status IN ('pending','verifying')
         ORDER BY id DESC
         LIMIT 1
@@ -616,7 +615,7 @@ async def get_active_method_purchase(
         SELECT *
         FROM file_purchases
         WHERE user_id=$1
-          AND file_code=$2
+          AND LOWER(TRIM(file_code)) = LOWER(TRIM($2))
           AND status IN ('pending','verifying')
           AND payment_id LIKE $3
         ORDER BY id DESC
@@ -635,7 +634,7 @@ async def get_paid_purchase(
         SELECT *
         FROM file_purchases
         WHERE user_id=$1
-          AND file_code=$2
+          AND LOWER(TRIM(file_code)) = LOWER(TRIM($2))
           AND status='paid'
         ORDER BY id DESC
         LIMIT 1
@@ -826,6 +825,9 @@ async def choose_payment(
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
+    # Always use the canonical code stored in `files.code` for every
+    # downstream payment/purchase operation. User input remains case-insensitive.
+    code = str(file.get("code") or code).strip()
     price = safe_int(
         file.get("price")
     )
@@ -854,7 +856,7 @@ async def choose_payment(
         SELECT *
         FROM file_purchases
         WHERE user_id=$1
-          AND file_code=$2
+          AND LOWER(TRIM(file_code)) = LOWER(TRIM($2))
           AND status IN ('pending','verifying')
         ORDER BY id DESC
         LIMIT 10
@@ -959,6 +961,9 @@ async def cashi_payment(
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
+    # Always use the canonical code stored in `files.code` for every
+    # downstream payment/purchase operation. User input remains case-insensitive.
+    code = str(file.get("code") or code).strip()
     price = safe_int(
         file.get("price")
     )
@@ -1034,6 +1039,9 @@ async def manual_payment(
         return await call.message.answer(
             "❌ File tidak ditemukan."
         )
+    # Always use the canonical code stored in `files.code` for every
+    # downstream payment/purchase operation. User input remains case-insensitive.
+    code = str(file.get("code") or code).strip()
     price = safe_int(
         file.get("price")
     )
@@ -1206,7 +1214,7 @@ async def get_or_create_purchase(
         SELECT *
         FROM file_purchases
         WHERE user_id=$1
-          AND file_code=$2
+          AND LOWER(TRIM(file_code)) = LOWER(TRIM($2))
           AND status IN ('pending','verifying')
         ORDER BY id DESC
         LIMIT 1
