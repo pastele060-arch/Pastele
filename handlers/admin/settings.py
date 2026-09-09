@@ -13,6 +13,7 @@ import asyncio
 
 from database import get_pool
 from handlers.admin.admins import is_admin
+from handlers.qrid import QRIDState
 
 
 router = Router()
@@ -1038,9 +1039,27 @@ async def receive_binance_account(message: Message, state: FSMContext):
     await message.answer("✅ Akun Binance berhasil disimpan.")
 
 @router.callback_query(F.data == "qrid_help")
-async def qrid_help(call: CallbackQuery):
-    if not is_admin(call.from_user.id): return await call.answer("❌ No access",show_alert=True)
-    await call.answer("Gunakan /qrid", show_alert=True)
+async def qrid_help(call: CallbackQuery, state: FSMContext):
+    """Open the QR Manual setup flow directly from Admin > Payment Methods."""
+    if not is_admin(call.from_user.id):
+        return await call.answer("❌ No access", show_alert=True)
+
+    await call.answer()
+    await state.set_state(QRIDState.waiting_qr)
+    lang = "id"
+    try:
+        from utils.user_lang import get_user_language
+        lang = await get_user_language(call.from_user.id)
+    except Exception:
+        pass
+
+    prompt = {
+        "id": "📷 <b>SET QR MANUAL</b>\n\nKirim foto/gambar QR Manual sekarang di chat ini.\n\nBot akan menyimpan Chat ID, Message ID, dan File ID secara otomatis.",
+        "en": "📷 <b>SET MANUAL QR</b>\n\nSend the Manual QR image now in this chat.\n\nThe bot will automatically save the Chat ID, Message ID, and File ID.",
+        "zh": "📷 <b>设置手动二维码</b>\n\n请现在在此聊天中发送手动二维码图片。\n\n机器人会自动保存 Chat ID、Message ID 和 File ID。",
+    }.get(lang, "📷 <b>SET QR MANUAL</b>\n\nKirim foto/gambar QR Manual sekarang di chat ini.")
+
+    await call.message.answer(prompt, parse_mode="HTML")
 
 
 @router.message(BinanceAddressState.waiting, F.text)
