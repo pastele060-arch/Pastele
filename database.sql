@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT,
     fullname TEXT,
     full_name TEXT,
-    language TEXT DEFAULT 'id' CHECK (language IN ('id','en')),
+    language TEXT DEFAULT 'id' CHECK (language IN ('id','en','zh')),
     balance BIGINT NOT NULL DEFAULT 0 CHECK (balance >= 0),
     total_earn BIGINT NOT NULL DEFAULT 0,
     total_referral BIGINT NOT NULL DEFAULT 0,
@@ -92,7 +92,26 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
 UPDATE users SET chat_id = user_id WHERE chat_id IS NULL;
 UPDATE users SET full_name = COALESCE(full_name, fullname) WHERE full_name IS NULL;
 UPDATE users SET fullname = COALESCE(fullname, full_name) WHERE fullname IS NULL;
-UPDATE users SET language = 'id' WHERE language IS NULL OR language NOT IN ('id','en');
+DO $$
+DECLARE c RECORD;
+BEGIN
+    IF to_regclass('public.users') IS NOT NULL THEN
+        FOR c IN
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.users'::regclass
+              AND contype = 'c'
+              AND pg_get_constraintdef(oid) ILIKE '%language%'
+        LOOP
+            EXECUTE format('ALTER TABLE public.users DROP CONSTRAINT IF EXISTS %I', c.conname);
+        END LOOP;
+        ALTER TABLE public.users
+            ADD CONSTRAINT users_language_check
+            CHECK (language IN ('id','en','zh'));
+    END IF;
+END $$;
+
+UPDATE users SET language = 'id' WHERE language IS NULL OR language NOT IN ('id','en','zh');
 UPDATE users SET balance = 0 WHERE balance IS NULL OR balance < 0;
 
 CREATE INDEX IF NOT EXISTS idx_users_creator ON users(is_creator, creator_status);
