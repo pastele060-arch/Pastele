@@ -2920,26 +2920,33 @@ async def complete_success_side_effects(
         purchase,
     )
     # ========================================================
-    # USER SUCCESS MESSAGE
+    # USER SUCCESS -> USE THE SAME GET FILE / OPEN MENU FLOW
     # ========================================================
+    # Setelah pembayaran sukses, jangan memakai media_keyboard()
+    # lama di pay.py. Arahkan ke renderer Get File yang sama seperti
+    # kode gratis/paid biasa. Renderer tersebut memakai open_menu.py
+    # untuk membuat tombol:
+    #   📂 Open Page / 📤 Open All
+    # dan otomatis mengikuti bahasa user.
     try:
-        await message.answer(
-            (
-                "🎉 <b>Pembayaran berhasil!</b>\n\n"
-                f"📦 Total File: <b>{len(media_list)}</b>\n\n"
-                "Silakan pilih pengiriman:"
-            ),
-            parse_mode="HTML",
-            reply_markup=media_keyboard(
-                media_id,
-                1,
-                len(media_list),
-            ),
-        )
+        from handlers.getfile import process_code
+
+        # process_code() akan membaca purchase yang baru saja berstatus
+        # paid, lalu menampilkan: FOUND FILE + open_menu.py keyboard.
+        await process_code(message, code)
     except Exception:
         logger.exception(
-            "SEND MEDIA MENU ERROR"
+            "REDIRECT TO OPEN MENU ERROR | code=%s | user=%s",
+            code,
+            user_id,
         )
+        try:
+            await message.answer(
+                "❌ Pembayaran berhasil, tetapi menu file gagal dibuka. "
+                "Silakan kirim kembali kode untuk membuka file."
+            )
+        except Exception:
+            pass
     return True
 # ============================================================
 # FINISH CASHI PAYMENT
