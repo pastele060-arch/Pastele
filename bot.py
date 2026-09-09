@@ -43,6 +43,15 @@ async def telegram_error_handler(event):
 # ============================================================
 # MIDDLEWARE
 # ============================================================
+# IMPORTANT: loading is registered FIRST so Telegram receives the
+# callback ACK before maintenance/ban/rate-limit/database work.
+dp.callback_query.middleware(
+    CallbackLoadingMiddleware()
+)
+dp.message.middleware(
+    MessageLoadingMiddleware()
+)
+
 dp.message.middleware(
     BanMiddleware()
 )
@@ -58,10 +67,6 @@ dp.callback_query.middleware(
 # Conservative anti-spam guard
 dp.callback_query.middleware(
     RateLimitMiddleware()
-)
-# Immediate callback loading feedback
-dp.callback_query.middleware(
-    CallbackLoadingMiddleware()
 )
 # ============================================================
 # ROUTERS IMPORT

@@ -571,6 +571,96 @@ CREATE INDEX IF NOT EXISTS idx_file_reactions_code ON file_user_reactions(file_c
 CREATE INDEX IF NOT EXISTS idx_file_favorites_user ON file_user_favorites(user_id);
 CREATE INDEX IF NOT EXISTS idx_file_ratings_code ON file_user_ratings(file_code);
 
+
+-- -------------------------
+-- AUXILIARY TABLES USED BY BOT HANDLERS
+-- -------------------------
+CREATE TABLE IF NOT EXISTS code_share_progress (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT NOT NULL,
+    user_id BIGINT NOT NULL,
+    target INT NOT NULL DEFAULT 1,
+    progress INT NOT NULL DEFAULT 0,
+    is_paid BOOLEAN NOT NULL DEFAULT FALSE,
+    completed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(code,user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_share_progress_user ON code_share_progress(user_id);
+CREATE INDEX IF NOT EXISTS idx_code_share_progress_code ON code_share_progress(code);
+
+CREATE TABLE IF NOT EXISTS code_share_events (
+    id BIGSERIAL PRIMARY KEY,
+    code TEXT NOT NULL,
+    owner_id BIGINT NOT NULL,
+    new_member_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(code,owner_id,new_member_id)
+);
+
+CREATE TABLE IF NOT EXISTS creator_upgrade_payments (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    amount BIGINT NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_id BIGINT,
+    payment_id TEXT,
+    provider TEXT,
+    provider_invoice TEXT,
+    qr_string TEXT,
+    qr_image TEXT,
+    payment_url TEXT,
+    expires_at TIMESTAMPTZ,
+    paid_at TIMESTAMPTZ,
+    reviewed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_creator_upgrade_user ON creator_upgrade_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_creator_upgrade_status ON creator_upgrade_payments(status);
+
+CREATE TABLE IF NOT EXISTS premium_payments (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    package_id TEXT NOT NULL,
+    amount BIGINT NOT NULL DEFAULT 0,
+    payment_id TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    qr_string TEXT,
+    payment_url TEXT,
+    expires_at TIMESTAMPTZ,
+    access_until TIMESTAMPTZ,
+    code_limit INT NOT NULL DEFAULT 0,
+    paid_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_premium_payments_user ON premium_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_premium_payments_status ON premium_payments(status);
+
+CREATE TABLE IF NOT EXISTS premium_code_usage (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    code TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id,code)
+);
+CREATE INDEX IF NOT EXISTS idx_premium_code_usage_user ON premium_code_usage(user_id);
+
+CREATE TABLE IF NOT EXISTS user_notifications (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'general',
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    is_read BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    read_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_user_notifications_user ON user_notifications(user_id,created_at DESC);
+
 -- Make each media independently addressable.
 CREATE TABLE IF NOT EXISTS media_codes (
     media_code TEXT PRIMARY KEY,
