@@ -135,11 +135,9 @@ INSERT INTO settings(key,value) VALUES
 ('payment_binance_enabled','off'),
 ('manual_qr_chat_id',''),
 ('manual_qr_message_id',''),
+('manual_qr_file_id',''),
 ('binance_usdt_address',''),
-('binance_account',''),
-('manual_qr_chat_id',''),
-('manual_qr_message_id',''),
-('manual_qr_file_id','')
+('binance_account','')
 ON CONFLICT(key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS admins (
