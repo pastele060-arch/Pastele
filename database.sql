@@ -128,7 +128,18 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT INTO settings(key,value) VALUES
 ('maintenance','off'),
 ('maintenance_text','Maintenance sedang berlangsung. Silakan coba lagi nanti.'),
-('withdraw_enabled','on')
+('withdraw_enabled','on'),
+('payment_cashi_enabled','on'),
+('payment_bayargg_enabled','on'),
+('payment_manual_enabled','on'),
+('payment_binance_enabled','off'),
+('manual_qr_chat_id',''),
+('manual_qr_message_id',''),
+('binance_usdt_address',''),
+('binance_account',''),
+('manual_qr_chat_id',''),
+('manual_qr_message_id',''),
+('manual_qr_file_id','')
 ON CONFLICT(key) DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS admins (
@@ -698,6 +709,9 @@ ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS provider_invoice TEXT;
 ALTER TABLE file_purchases ADD COLUMN IF NOT EXISTS payment_method TEXT;
 CREATE INDEX IF NOT EXISTS idx_file_purchases_provider_invoice
 ON file_purchases(provider,provider_invoice);
+
+-- Payment method settings are runtime-switchable from the admin panel.
+-- manual_qr_chat_id + manual_qr_message_id point to the QR message captured by /qrid.
 
 -- Telegram safety settings.
 INSERT INTO settings(key,value) VALUES

@@ -102,6 +102,7 @@ from handlers.ewallet import router as ewallet_router
 # PAYMENT
 from handlers.pay import router as pay_router
 from handlers.cancel import router as cancel_router
+from handlers.qrid import router as qrid_router
 # CASHI PAYMENT
 from handlers.cashi import router as cashi_router
 from handlers.bayargg_payment import router as bayargg_payment_router
@@ -180,6 +181,7 @@ dp.include_router(pay_router)
 dp.include_router(cashi_router)
 dp.include_router(bayargg_payment_router)
 dp.include_router(cancel_router)
+dp.include_router(qrid_router)
 # ------------------------------------------------------------
 # WITHDRAW
 # ------------------------------------------------------------
