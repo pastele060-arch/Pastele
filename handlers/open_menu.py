@@ -9,28 +9,49 @@ from database import get_pool
 from handlers.sendall import send_all
 from utils.user import get_user_status  # 🔥 TAMBAH INI
 from utils.share_unlock import get_share_status, ensure_share_progress, gate_message
+from utils.user_lang import get_user_language
 
 router = Router()
 
 
-def open_keyboard(code):
+def open_keyboard(code, lang="id"):
+    labels = {
+        "id": ("📂 Open Page", "📤 Open All"),
+        "en": ("📂 Open Page", "📤 Open All"),
+        "zh": ("📂 打开页面", "📤 全部打开"),
+    }
+    page_label, all_label = labels.get(lang, labels["id"])
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📂 Open Page",
+                    text=page_label,
                     callback_data=f"page:{code}:1"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="📤 Open All",
+                    text=all_label,
                     callback_data=f"all:{code}"
                 )
             ]
         ]
     )
 
+
+
+@router.callback_query(F.data.startswith("open_code:"))
+async def open_code_callback(call: CallbackQuery, state=None):
+    try:
+        await call.answer("⏳ Opening...", show_alert=False)
+    except Exception:
+        pass
+    code = call.data.split(":", 1)[1].strip()
+    from handlers.getfile import process_code
+    from aiogram.fsm.context import FSMContext
+    # Callback has no FSM in this handler unless injected by aiogram; process_code
+    # accepts a tiny compatibility state, so use its own helper.
+    return await process_code(call.message, code)
 
 @router.callback_query(F.data.startswith("all:"))
 async def open_all(call: CallbackQuery):

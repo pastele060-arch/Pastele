@@ -22,6 +22,8 @@ from aiogram.types import (
 
 from database import get_pool
 from utils.user import get_user_status
+from utils.user_lang import get_user_language
+from utils.language import translate
 
 
 router = Router()
@@ -35,8 +37,11 @@ logger = logging.getLogger(__name__)
 
 UPDATE_DELAY = 0.5
 
-CODE_MIN_LENGTH = 30
-CODE_MAX_LENGTH = 60
+CODE_PREFIX = "Pastelebot_"
+CODE_TOTAL_LENGTH = 24
+CODE_SUFFIX_LENGTH = 14
+CODE_MIN_LENGTH = CODE_TOTAL_LENGTH
+CODE_MAX_LENGTH = CODE_TOTAL_LENGTH
 
 
 # ============================================================
@@ -167,7 +172,7 @@ def safe_json(data):
 # ============================================================
 
 CODE_REGEX = re.compile(
-    rf"\b[a-z0-9]{{{CODE_MIN_LENGTH},{CODE_MAX_LENGTH}}}\b",
+    rf"(?<![A-Za-z0-9]){re.escape(CODE_PREFIX)}[A-Za-z0-9]{{{CODE_SUFFIX_LENGTH}}}(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 
@@ -186,7 +191,6 @@ def normalize_code(code: str) -> str:
         .replace(" ", "")
         .replace("\n", "")
         .replace("\r", "")
-        .lower()
     )
 
 
@@ -290,10 +294,8 @@ async def getfile_start(
         # TEXT
         # ====================================================
 
-        text = (
-            "📥 <b>GET FILE MODE</b>\n\n"
-            "Silakan kirim <b>CODE</b> file sekarang."
-        )
+        lang = await get_user_language(user_id)
+        text = translate(lang, "send_code").replace("*", "<b>", 1).replace("*", "</b>", 1)
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -374,9 +376,8 @@ async def open_file_by_code(
     if not code:
         await state.clear()
 
-        return await message.answer(
-            "❌ CODE tidak valid."
-        )
+        lang = await get_user_language(message.from_user.id)
+        return await message.answer({"id":"❌ CODE tidak valid.","en":"❌ Invalid code.","zh":"❌ 代码无效。"}.get(lang,"❌ CODE tidak valid."))
 
     pool = await get_pool()
 
@@ -410,9 +411,8 @@ async def open_file_by_code(
 
         await state.clear()
 
-        return await message.answer(
-            "❌ File tidak ditemukan."
-        )
+        lang = await get_user_language(message.from_user.id)
+        return await message.answer(translate(lang, "code_not_found").replace("*", "", 2))
 
     # ========================================================
     # MEDIA
@@ -426,9 +426,8 @@ async def open_file_by_code(
 
         await state.clear()
 
-        return await message.answer(
-            "❌ File kosong."
-        )
+        lang = await get_user_language(message.from_user.id)
+        return await message.answer(translate(lang, "file_empty").replace("*", "", 2))
 
     # ========================================================
     # EXPIRED
@@ -444,9 +443,8 @@ async def open_file_by_code(
 
                 await state.clear()
 
-                return await message.answer(
-                    "❌ File sudah kadaluarsa."
-                )
+                lang = await get_user_language(message.from_user.id)
+                return await message.answer({"id":"❌ File sudah kadaluarsa.","en":"❌ File has expired.","zh":"❌ 文件已过期。"}.get(lang,"❌ File sudah kadaluarsa."))
 
         except Exception:
             logger.warning(
@@ -678,19 +676,13 @@ async def open_file_by_code(
             ]
         )
 
-        return await message.answer(
-            (
-                "🔒 <b>FILE BERBAYAR</b>\n\n"
-                f"🔑 CODE : "
-                f"<code>{code}</code>\n"
-                f"💰 Harga : "
-                f"Rp {price:,}\n\n"
-                "Silakan lakukan pembayaran "
-                "untuk membuka file."
-            ).replace(",", "."),
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
+        lang = await get_user_language(message.from_user.id)
+        paid_text = {
+            "id": (f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Harga: Rp {price:,}\n\nSilakan lakukan pembayaran untuk membuka file."),
+            "en": (f"🔒 <b>PAID FILE</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Price: Rp {price:,}\n\nComplete the payment to open this file."),
+            "zh": (f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{code}</code>\n💰 价格：Rp {price:,}\n\n请完成付款后打开文件。"),
+        }
+        return await message.answer(paid_text.get(lang, paid_text["id"]).replace(",", "."), parse_mode="HTML", reply_markup=keyboard)
 
     # ========================================================
     # OPEN FILE
@@ -714,18 +706,13 @@ async def open_file_by_code(
         file["title"] or "Tanpa Judul"
     )
 
-    return await message.answer(
-        (
-            "✅ <b>FILE DITEMUKAN</b>\n\n"
-            f"📝 Judul : "
-            f"<b>{title}</b>\n"
-            f"📦 Total Media : "
-            f"<b>{len(media)}</b>\n\n"
-            "Pilih metode pengiriman:"
-        ),
-        parse_mode="HTML",
-        reply_markup=open_keyboard(code),
-    )
+    lang = await get_user_language(message.from_user.id)
+    found_text = {
+        "id": f"✅ <b>FILE DITEMUKAN</b>\n\n📝 Judul: <b>{title}</b>\n📦 Total Media: <b>{len(media)}</b>\n\nPilih metode pengiriman:",
+        "en": f"✅ <b>FILE FOUND</b>\n\n📝 Title: <b>{title}</b>\n📦 Total Media: <b>{len(media)}</b>\n\nChoose a delivery method:",
+        "zh": f"✅ <b>找到文件</b>\n\n📝 标题：<b>{title}</b>\n📦 媒体总数：<b>{len(media)}</b>\n\n请选择发送方式：",
+    }
+    return await message.answer(found_text.get(lang, found_text["id"]), parse_mode="HTML", reply_markup=open_keyboard(code, lang))
 
 
 # ============================================================
@@ -804,11 +791,13 @@ async def receive_code(
             except Exception:
                 pass
 
-            return await message.answer(
-                "❌ Itu bukan CODE bot saya.\n\n"
-                "Silakan kirim CODE yang benar "
-                "atau tekan Cancel."
-            )
+            lang = await get_user_language(user_id)
+            invalid = {
+                "id": "❌ Itu bukan CODE bot saya.\n\nSilakan kirim CODE yang benar atau tekan Batal.",
+                "en": "❌ That is not a valid bot code.\n\nSend a valid code or press Cancel.",
+                "zh": "❌ 这不是有效的机器人代码。\n\n请发送正确的代码或点击取消。",
+            }
+            return await message.answer(invalid.get(lang, invalid["id"]))
 
         # ====================================================
         # NORMALIZE
@@ -898,9 +887,8 @@ async def cancel_getfile(
 
         await state.clear()
 
-        text = (
-            "❌ <b>Get File dibatalkan.</b>"
-        )
+        lang = await get_user_language(user_id)
+        text = {"id":"❌ <b>Get File dibatalkan.</b>","en":"❌ <b>Get File cancelled.</b>","zh":"❌ <b>获取文件已取消。</b>"}.get(lang,"❌ <b>Get File dibatalkan.</b>")
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[

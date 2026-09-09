@@ -7,25 +7,28 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramRetryAfter
 from utils.media_sender import safe_copy_from_storage
 from utils.share_unlock import telegram_setting
+from utils.user_lang import get_user_language
+from utils.language import media_watermark
 
 logger = logging.getLogger(__name__)
 SEND_INTERVAL = 2.0
 BATCH_SIZE = 10
 
-def final_keyboard(code):
+def final_keyboard(code, lang="id"):
+    idn, zh = lang == "id", lang == "zh"
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="👍 Like", callback_data=f"like:{code}"),
-         InlineKeyboardButton(text="👎 No Like", callback_data=f"dislike:{code}")],
-        [InlineKeyboardButton(text="❤️ Favorit", callback_data=f"favorite:{code}"),
-         InlineKeyboardButton(text="⭐ Rating", callback_data=f"rating:{code}")],
-        [InlineKeyboardButton(text="🛍️ Marketplace", callback_data="marketplace"),
-         InlineKeyboardButton(text="🔍 Cari Code", callback_data="search_code")],
+        [InlineKeyboardButton(text="👍 Suka" if idn else "👍 Like" if not zh else "👍 喜欢", callback_data=f"like:{code}"),
+         InlineKeyboardButton(text="👎 Tidak Suka" if idn else "👎 Dislike" if not zh else "👎 不喜欢", callback_data=f"dislike:{code}")],
+        [InlineKeyboardButton(text="❤️ Favorit" if idn else "❤️ Favorite" if not zh else "❤️ 收藏", callback_data=f"favorite:{code}"),
+         InlineKeyboardButton(text="⭐ Rating" if not zh else "⭐ 评分", callback_data=f"rating:{code}")],
+        [InlineKeyboardButton(text="🛍️ Marketplace" if not zh else "🛍️ 市场", callback_data="marketplace"),
+         InlineKeyboardButton(text="🔍 Cari Code" if idn else "🔍 Search Code" if not zh else "🔍 搜索代码", callback_data="search_code")],
     ])
 
-def continue_keyboard(code, next_offset):
+def continue_keyboard(code, next_offset, lang="id"):
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="▶️ Lanjut Kirim", callback_data=f"allnext:{code}:{next_offset}")],
-        [InlineKeyboardButton(text="⛔ Stop Kirim", callback_data=f"allstop:{code}")],
+        [InlineKeyboardButton(text=("▶️ Lanjut Kirim" if lang == "id" else "▶️ Continue" if lang == "en" else "▶️ 继续发送"), callback_data=f"allnext:{code}:{next_offset}")],
+        [InlineKeyboardButton(text=("⛔ Stop Kirim" if lang == "id" else "⛔ Stop" if lang == "en" else "⛔ 停止发送"), callback_data=f"allstop:{code}")],
     ])
 
 async def send_all(bot, chat_id, code, file, user_level, offset=0, status_message=None):
@@ -38,32 +41,32 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
     total = len(media)
     offset = max(0, min(int(offset), total))
     if offset >= total:
-        msg = "✅ <b>Semua media sudah terkirim.</b>"
+        lang = await get_user_language(chat_id)
+        msg = {"id":"✅ <b>Semua media sudah terkirim.</b>","en":"✅ <b>All media have been sent.</b>","zh":"✅ <b>所有媒体已发送。</b>"}.get(lang,"✅ <b>Semua media sudah terkirim.</b>")
         if status_message:
-            try: await status_message.edit_text(msg, parse_mode="HTML", reply_markup=final_keyboard(code))
+            try: await status_message.edit_text(msg, parse_mode="HTML", reply_markup=final_keyboard(code, lang))
             except Exception: pass
         else:
-            await bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=final_keyboard(code))
+            await bot.send_message(chat_id, msg, parse_mode="HTML", reply_markup=final_keyboard(code, lang))
         return True
 
     send_interval = await telegram_setting("telegram_user_send_delay", SEND_INTERVAL)
     batch_end = min(offset + BATCH_SIZE, total)
     batch = media[offset:batch_end]
     me = await bot.get_me()
-    bot_name = f"@{me.username}" if me.username else "bot"
+    bot_name = f"@{me.username}" if me.username else "@bot"
+    lang = await get_user_language(chat_id)
 
     if status_message is None:
         status_message = await bot.send_message(
             chat_id,
-            f"⏳ <b>Send All</b> • Media {offset+1}-{batch_end}/{total}\n"
-            f"🛡️ Jeda {send_interval:g} detik/media",
+            (f"⏳ <b>Send All</b> • Media {offset+1}-{batch_end}/{total}\n🛡️ Delay {send_interval:g}s/media" if lang == "en" else f"⏳ <b>全部发送</b> • 媒体 {offset+1}-{batch_end}/{total}\n🛡️ 每个媒体间隔 {send_interval:g} 秒" if lang == "zh" else f"⏳ <b>Kirim Semua</b> • Media {offset+1}-{batch_end}/{total}\n🛡️ Jeda {send_interval:g} detik/media"),
             parse_mode="HTML",
         )
     else:
         try:
             await status_message.edit_text(
-                f"⏳ <b>Send All</b> • Media {offset+1}-{batch_end}/{total}\n"
-                f"🛡️ Jeda {send_interval:g} detik/media",
+                (f"⏳ <b>Send All</b> • Media {offset+1}-{batch_end}/{total}\n🛡️ Delay {send_interval:g}s/media" if lang == "en" else f"⏳ <b>全部发送</b> • 媒体 {offset+1}-{batch_end}/{total}\n🛡️ 每个媒体间隔 {send_interval:g} 秒" if lang == "zh" else f"⏳ <b>Kirim Semua</b> • Media {offset+1}-{batch_end}/{total}\n🛡️ Jeda {send_interval:g} detik"),
                 parse_mode="HTML")
         except Exception: pass
 
@@ -85,11 +88,7 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
         # separate bubble. When the media is forwarded/shared, its caption
         # travels with it.
         media_code = f"{code}-m{pos:03d}"
-        media_caption = (
-            f"🔑 <b>{media_code}</b> • 🤖 {bot_name} • "
-            f"📦 <b>Media {pos}/{total}</b>\n"
-            f"🔐 Code: <code>{code}</code>"
-        )
+        media_caption = media_watermark(lang, media_code, bot_name, pos, total)
 
         try:
             result = await safe_copy_from_storage(
@@ -111,28 +110,25 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
     remaining = total - batch_end
     if remaining > 0:
         text = (
-            f"📦 <b>Batch selesai: {offset+1}-{batch_end}/{total}</b>\n"
-            f"✅ Berhasil: {success} • ⚠️ Gagal: {failed}\n\n"
-            f"⏭️ Masih ada <b>{remaining}</b> media.\n"
-            "Pilih <b>Lanjut Kirim</b> untuk batch berikutnya atau <b>Stop</b>."
+            (f"📦 <b>Batch complete: {offset+1}-{batch_end}/{total}</b>\n✅ Sent: {success} • ⚠️ Failed: {failed}\n\n⏭️ <b>{remaining}</b> media remaining.\nChoose <b>Continue</b> or <b>Stop</b>." if lang == "en" else f"📦 <b>批次完成：{offset+1}-{batch_end}/{total}</b>\n✅ 成功：{success} • ⚠️ 失败：{failed}\n\n⏭️ 剩余 <b>{remaining}</b> 个媒体。\n请选择 <b>继续发送</b> 或 <b>停止</b>。" if lang == "zh" else f"📦 <b>Batch selesai: {offset+1}-{batch_end}/{total}</b>\n✅ Berhasil: {success} • ⚠️ Gagal: {failed}\n\n⏭️ Masih ada <b>{remaining}</b> media.\nPilih <b>Lanjut Kirim</b> atau <b>Stop</b>.")
         )
         try:
             await status_message.edit_text(text, parse_mode="HTML",
-                                           reply_markup=continue_keyboard(code, batch_end))
+                                           reply_markup=continue_keyboard(code, batch_end, lang))
         except Exception:
             await bot.send_message(chat_id, text, parse_mode="HTML",
-                                   reply_markup=continue_keyboard(code, batch_end))
+                                   reply_markup=continue_keyboard(code, batch_end, lang))
         return success > 0
 
-    final_text = f"✅ <b>Send All selesai</b>\n\n📦 {success}/{total} media terkirim"
-    if failed: final_text += f"\n⚠️ Gagal: {failed}"
-    final_text += "\n\nSemua media sudah dikirim."
+    final_text = (f"✅ <b>Send All completed</b>\n\n📦 {success}/{total} media sent" if lang == "en" else f"✅ <b>全部发送完成</b>\n\n📦 已发送 {success}/{total} 个媒体" if lang == "zh" else f"✅ <b>Kirim Semua selesai</b>\n\n📦 {success}/{total} media terkirim")
+    if failed: final_text += (f"\n⚠️ Failed: {failed}" if lang == "en" else f"\n⚠️ 失败：{failed}" if lang == "zh" else f"\n⚠️ Gagal: {failed}")
+    final_text += ("\n\nAll media have been sent." if lang == "en" else "\n\n所有媒体已发送。" if lang == "zh" else "\n\nSemua media sudah dikirim.")
     try:
         await status_message.edit_text(final_text, parse_mode="HTML",
-                                       reply_markup=final_keyboard(code))
+                                       reply_markup=final_keyboard(code, lang))
     except Exception:
         await bot.send_message(chat_id, final_text, parse_mode="HTML",
-                               reply_markup=final_keyboard(code))
+                               reply_markup=final_keyboard(code, lang))
     return success > 0
 
 async def _load_file(code):
@@ -169,10 +165,11 @@ async def all_next(call):
 
 @router.callback_query(F.data.startswith("allstop:"))
 async def all_stop(call):
-    await call.answer("⛔ Pengiriman dihentikan.")
+    lang = await get_user_language(call.from_user.id)
+    await call.answer({"id":"⛔ Pengiriman dihentikan.","en":"⛔ Sending stopped.","zh":"⛔ 已停止发送。"}.get(lang,"⛔ Pengiriman dihentikan."))
     code = call.data.split(":",1)[1]
     try:
         await call.message.edit_text(
-            f"⛔ <b>Send All dihentikan.</b>\n\n🔑 <code>{code}</code>",
-            parse_mode="HTML", reply_markup=final_keyboard(code))
+            f"⛔ <b>{'Send All stopped.' if lang == 'en' else '全部发送已停止。' if lang == 'zh' else 'Send All dihentikan.'}</b>\n\n🔑 <code>{code}</code>",
+            parse_mode="HTML", reply_markup=final_keyboard(code, lang))
     except Exception: pass

@@ -20,7 +20,7 @@ router = Router()
 # =========================================================
 
 CODE_REGEX = re.compile(
-    r"[a-z0-9]{30,60}",
+    r"(?<![A-Za-z0-9])Pastelebot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 
@@ -31,7 +31,6 @@ def normalize_code(code: str) -> str:
         .strip()
         .replace(" ", "")
         .replace("\n", "")
-        .lower()
     )
 
 
@@ -119,27 +118,16 @@ async def loading_animation(message: Message):
 # KEYBOARD
 # =========================================================
 
-def kb_open():
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="📥 Buka File",
-                    callback_data="getfile",
-                )
-            ]
-        ]
-    )
+def kb_open(code: str):
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="📂 Open Code", callback_data=f"open_code:{code}")]])
 
 
 def kb_upload():
-
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="📤 Upload File",
+                    text="📤 Buat Code / Upload",
                     callback_data="upfile",
                 )
             ]
@@ -438,43 +426,33 @@ async def notify_text(
 
             if exists:
 
-                return await message.answer(
-                    (
-                        "🔑 <b>CODE TERDETEKSI</b>\n\n"
-                        "✅ Kode file valid ditemukan.\n\n"
-                        "Tekan tombol di bawah "
-                        "untuk membuka file."
-                    ),
-                    parse_mode="HTML",
-                    reply_markup=kb_open(),
-                )
+                from utils.user_lang import get_user_language
+                lang = await get_user_language(message.from_user.id)
+                text_ok = {
+                    "id": "🔑 <b>CODE TERDETEKSI</b>\n\n✅ Kode file ditemukan.\n\nTekan tombol di bawah untuk membuka file.",
+                    "en": "🔑 <b>CODE DETECTED</b>\n\n✅ File code found.\n\nPress the button below to open it.",
+                    "zh": "🔑 <b>检测到代码</b>\n\n✅ 找到文件代码。\n\n点击下方按钮打开文件。",
+                }
+                return await message.answer(text_ok.get(lang, text_ok["id"]), parse_mode="HTML", reply_markup=kb_open(code))
 
-            return await message.answer(
-                (
-                    "❌ <b>CODE TIDAK DITEMUKAN</b>\n\n"
-                    "Kode yang kamu kirim tidak tersedia "
-                    "di database."
-                ),
-                parse_mode="HTML",
-                reply_markup=kb_home(),
-            )
+            from utils.user_lang import get_user_language
+            lang = await get_user_language(message.from_user.id)
+            notfound = {"id":"❌ <b>CODE TIDAK DITEMUKAN</b>\n\nKode tidak tersedia di database.","en":"❌ <b>CODE NOT FOUND</b>\n\nThat code is not available in the database.","zh":"❌ <b>未找到代码</b>\n\n该代码不在数据库中。"}
+            return await message.answer(notfound.get(lang, notfound["id"]), parse_mode="HTML", reply_markup=kb_upload())
 
 
         # =================================================
         # DEFAULT TEXT
         # =================================================
 
-        return await message.answer(
-            (
-                "👋 <b>Halo!</b>\n\n"
-                "Saya sedang mencari menu yang sesuai "
-                "dengan pesan kamu.\n\n"
-                "Gunakan menu <b>START</b> untuk melihat "
-                "semua fitur bot."
-            ),
-            parse_mode="HTML",
-            reply_markup=kb_home(),
-        )
+        from utils.user_lang import get_user_language
+        lang = await get_user_language(message.from_user.id)
+        fallback = {
+            "id": "👋 <b>Pesan bukan CODE.</b>\n\nKalau ingin membuat code, upload file terlebih dahulu.",
+            "en": "👋 <b>This is not a code.</b>\n\nTo create a code, upload a file first.",
+            "zh": "👋 <b>这不是代码。</b>\n\n如果要创建代码，请先上传文件。",
+        }
+        return await message.answer(fallback.get(lang, fallback["id"]), parse_mode="HTML", reply_markup=kb_upload())
 
     finally:
 
@@ -528,7 +506,7 @@ async def notify_other(
                 "untuk melanjutkan."
             ),
             parse_mode="HTML",
-            reply_markup=kb_home(),
+            reply_markup=kb_upload(),
         )
 
     finally:

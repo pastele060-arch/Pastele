@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import secrets
+import string
 import time
 
 from contextlib import asynccontextmanager
@@ -27,6 +28,7 @@ from database import get_pool
 from keyboards.join import join_kb
 from utils.force_sub import check_force_sub
 from utils.share_unlock import telegram_setting
+from utils.user_lang import get_user_language
 
 
 router = Router()
@@ -457,28 +459,13 @@ async def copy_to_storage(
 # =========================================================
 
 async def generate_code() -> str:
-
+    """Generate stable marketplace codes like Pastelebot_A18KA07JAMP1714."""
     pool = await get_pool()
-
-    chars = "0123456789aiueo"
-
+    alphabet = string.ascii_uppercase + string.digits
     while True:
-
-        code = "".join(
-            secrets.choice(chars)
-            for _ in range(40)
-        )
-
-        exists = await pool.fetchval(
-            """
-            SELECT 1
-            FROM files
-            WHERE code = $1
-            LIMIT 1
-            """,
-            code,
-        )
-
+        suffix = "".join(secrets.choice(alphabet) for _ in range(14))
+        code = f"Pastelebot_{suffix}"
+        exists = await pool.fetchval("SELECT 1 FROM files WHERE LOWER(code)=LOWER($1) LIMIT 1", code)
         if not exists:
             return code
 
@@ -2538,20 +2525,13 @@ async def finalize_save(
         # SUCCESS
         # =================================================
 
-        await message.answer(
-
-            (
-                "✅ <b>FILE BERHASIL DISIMPAN</b>\n\n"
-                f"📝 <b>Judul</b>: {safe_title}\n"
-                f"📦 <b>Total Media</b>: {media_count}\n"
-                f"📁 <b>Isi</b>: {escape(files_info)}\n"
-                f"💎 <b>Status</b>: {mode}\n\n"
-                f"🔑 <b>Code</b>: "
-                f"<code>{safe_code}</code>"
-            ),
-
-            parse_mode="HTML",
-        )
+        lang = await get_user_language(user_id)
+        success_text = {
+            "id": (f"✅ <b>FILE BERHASIL DISIMPAN</b>\n\n📝 <b>Judul</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Isi</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}\n\n🔑 <b>Code</b>: <code>{safe_code}</code>"),
+            "en": (f"✅ <b>FILE SAVED SUCCESSFULLY</b>\n\n📝 <b>Title</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Content</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}\n\n🔑 <b>Code</b>: <code>{safe_code}</code>"),
+            "zh": (f"✅ <b>文件保存成功</b>\n\n📝 <b>标题</b>：{safe_title}\n📦 <b>媒体数量</b>：{media_count}\n📁 <b>内容</b>：{escape(files_info)}\n💎 <b>状态</b>：{mode}\n\n🔑 <b>代码</b>：<code>{safe_code}</code>"),
+        }
+        await message.answer(success_text.get(lang, success_text["id"]), parse_mode="HTML")
 
         # =================================================
         # PAID REVIEW CHANNEL

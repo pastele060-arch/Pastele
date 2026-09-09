@@ -206,11 +206,12 @@ async def process_start(
             [
                 InlineKeyboardButton(text="🇮🇩 Indonesia", callback_data="lang:id"),
                 InlineKeyboardButton(text="🇬🇧 English", callback_data="lang:en"),
+                InlineKeyboardButton(text="🇨🇳 中文", callback_data="lang:zh"),
             ]
         ])
         await loading.edit_text(
-            "🌐 <b>Pilih Bahasa / Choose Language</b>\n\n"
-            "🇮🇩 Pilih Bahasa Indonesia\n🇬🇧 Choose English",
+            "🌐 <b>Pilih Bahasa / Choose Language / 选择语言</b>\n\n"
+            "🇮🇩 Indonesia\n🇬🇧 English\n🇨🇳 中文",
             parse_mode="HTML", reply_markup=kb
         )
         return
@@ -250,7 +251,13 @@ async def process_start(
         lang = current_lang or "id"
         missing = await get_missing_channels(bot, user_id)
         names = "\n".join(f"• <b>{x['name']}</b>" for x in missing)
-        text = ("❌ <b>WAJIB JOIN CHANNEL</b>\n\nSilakan join channel yang belum kamu ikuti:\n" + names + "\n\nSetelah itu tekan <b>✅ Saya Sudah Join</b>.") if lang == "id" else ("❌ <b>CHANNEL JOIN REQUIRED</b>\n\nPlease join the channel(s) you have not joined:\n" + names + "\n\nThen press <b>✅ I Joined</b>.")
+        text = (
+            "❌ <b>WAJIB JOIN CHANNEL</b>\n\nSilakan join channel yang belum kamu ikuti:\n" + names + "\n\nSetelah itu tekan <b>✅ Saya Sudah Join</b>."
+            if lang == "id" else
+            "❌ <b>CHANNEL JOIN REQUIRED</b>\n\nPlease join the channel(s) you have not joined:\n" + names + "\n\nThen press <b>✅ I Joined</b>."
+            if lang == "en" else
+            "❌ <b>需要加入频道</b>\n\n请加入尚未加入的频道：\n" + names + "\n\n完成后点击 <b>✅ 我已加入</b>。"
+        )
         await loading.edit_text(
             text,
             reply_markup=join_kb(bot_username, user_id, lang),
@@ -572,6 +579,18 @@ async def render_home_fast(
             f"<code>{ref_link}</code>\n\n"
             "Use the menu below to upload, buy, sell and manage your Telegram code."
         )
+    elif lang == "zh":
+        text = (
+            "<b>✨ 市场控制面板 ✨</b>\n\n"
+            f"ID：<code>{user_id}</code>\n"
+            f"🎨 创作者：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n"
+            f"余额：{balance_text}\n"
+            f"推荐人数：<b>{referral}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "🔗 推荐链接：\n"
+            f"<code>{ref_link}</code>\n\n"
+            "使用下方菜单上传、购买、出售和管理 Telegram 代码。"
+        )
     else:
         text = (
             "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
@@ -734,12 +753,12 @@ async def back_home(
 @router.callback_query(F.data.startswith("lang:"))
 async def choose_language(call: CallbackQuery, state: FSMContext):
     lang = call.data.split(":", 1)[1]
-    if lang not in ("id", "en"):
+    if lang not in ("id", "en", "zh"):
         return await call.answer("Invalid language.", show_alert=True)
     pool = await get_pool()
     await pool.execute("UPDATE users SET language=$1 WHERE user_id=$2", lang, call.from_user.id)
     try:
-        await call.answer("Bahasa disimpan." if lang == "id" else "Language saved.")
+        await call.answer({"id": "Bahasa disimpan.", "en": "Language saved.", "zh": "语言已保存。"}.get(lang, "Bahasa disimpan."))
     except Exception:
         pass
 

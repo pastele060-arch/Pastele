@@ -19,6 +19,8 @@ from aiogram.types import (
 from database import get_pool
 from config import STORAGE_CHANNEL_ID
 from utils.share_unlock import get_share_status, ensure_share_progress, gate_message
+from utils.user_lang import get_user_language
+from utils.language import media_watermark
 
 
 router = Router()
@@ -161,6 +163,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
     album = []
     me = await bot.get_me()
     bot_name = f"@{me.username}" if me.username else "@bot"
+    lang = await get_user_language(user_id)
     for idx, item in enumerate(chunk):
         if not isinstance(item, dict) or not item.get("file_id"):
             continue
@@ -168,11 +171,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         typ = normalize_type(item.get("type"))
         position = start + idx + 1
         media_code = f"{code}-m{position:03d}"
-        cap = (
-            f"🔑 <b>{media_code}</b> • 🤖 {bot_name} • "
-            f"📦 <b>Media {position}/{len(media)}</b>\n"
-            f"🔐 Code: <code>{code}</code> • 📄 Page {page}/{total_pages}"
-        )
+        cap = media_watermark(lang, media_code, bot_name, position, len(media))
         if typ == "photo":
             album.append(InputMediaPhoto(media=fid, caption=cap, parse_mode="HTML"))
         elif typ == "video":
@@ -201,20 +200,20 @@ async def send_page(bot, chat_id, user_id, code, page=1):
     # Navigation is deliberately not auto-advanced. The next page requires a
     # button press and the handler enforces a 5-second cooldown.
     keyboard = [
-        build_page_buttons(code, page, total_pages),
+        build_page_buttons(code, page, total_pages, lang),
         [
-            InlineKeyboardButton(text="👍 Like", callback_data=f"like:{code}"),
-            InlineKeyboardButton(text="👎 No Like", callback_data=f"dislike:{code}"),
+            InlineKeyboardButton(text=("👍 Suka" if lang == "id" else "👍 Like" if lang == "en" else "👍 喜欢"), callback_data=f"like:{code}"),
+            InlineKeyboardButton(text=("👎 Tidak Suka" if lang == "id" else "👎 Dislike" if lang == "en" else "👎 不喜欢"), callback_data=f"dislike:{code}"),
         ],
         [
-            InlineKeyboardButton(text="❤️ Favorit", callback_data=f"favorite:{code}"),
-            InlineKeyboardButton(text="⭐ Rating", callback_data=f"rating:{code}"),
+            InlineKeyboardButton(text=("❤️ Favorit" if lang == "id" else "❤️ Favorite" if lang == "en" else "❤️ 收藏"), callback_data=f"favorite:{code}"),
+            InlineKeyboardButton(text=("⭐ Rating" if lang != "zh" else "⭐ 评分"), callback_data=f"rating:{code}"),
         ],
         [
-            InlineKeyboardButton(text="🛍️ Marketplace", callback_data="marketplace"),
-            InlineKeyboardButton(text="🔍 Cari Code", callback_data="search_code"),
+            InlineKeyboardButton(text=("🛍️ Marketplace" if lang != "zh" else "🛍️ 市场"), callback_data="marketplace"),
+            InlineKeyboardButton(text=("🔍 Cari Code" if lang == "id" else "🔍 Search Code" if lang == "en" else "🔍 搜索代码"), callback_data="search_code"),
         ],
-        [InlineKeyboardButton(text="📤 Send All", callback_data=f"all:{code}")],
+        [InlineKeyboardButton(text=("📤 Kirim Semua" if lang == "id" else "📤 Send All" if lang == "en" else "📤 全部发送"), callback_data=f"all:{code}")],
     ]
     try:
         await status.edit_reply_markup(reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
@@ -229,7 +228,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
 # PAGE BUTTONS
 # =========================
 
-def build_page_buttons(code: str, page: int, total: int):
+def build_page_buttons(code: str, page: int, total: int, lang: str = "id"):
 
     row = []
 
@@ -239,7 +238,7 @@ def build_page_buttons(code: str, page: int, total: int):
 
         row.append(
             InlineKeyboardButton(
-                text="⬅️ Prev",
+                text=("⬅️ Sebelumnya" if lang == "id" else "⬅️ Prev" if lang == "en" else "⬅️ 上一页"),
                 callback_data=f"page:{code}:{page-1}"
             )
         )
@@ -276,7 +275,7 @@ def build_page_buttons(code: str, page: int, total: int):
 
         row.append(
             InlineKeyboardButton(
-                text="Next ➡️",
+                text=("Berikutnya ➡️" if lang == "id" else "Next ➡️" if lang == "en" else "下一页 ➡️"),
                 callback_data=f"page:{code}:{page+1}"
             )
         )
@@ -285,7 +284,7 @@ def build_page_buttons(code: str, page: int, total: int):
 
         row.append(
             InlineKeyboardButton(
-                text="✅ END",
+                text=("✅ SELESAI" if lang == "id" else "✅ END" if lang == "en" else "✅ 结束"),
                 callback_data="end_page"
             )
         )
