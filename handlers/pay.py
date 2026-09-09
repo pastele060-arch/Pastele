@@ -759,7 +759,18 @@ async def payment_method_keyboard(code: str, user_id: int | None = None):
         return str(value if value is not None else default).lower() in {"on","1","true","yes"}
     cashi_on = await setting("payment_cashi_enabled", "on") and AUTO_PAYMENT_ENABLED
     bayargg_on = await setting("payment_bayargg_enabled", "on") and bool(os.getenv("BAYARGG_API_KEY", "").strip())
-    manual_on = await setting("payment_manual_enabled", "on") and bool(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    manual_enabled = await setting("payment_manual_enabled", "off")
+    manual_qr_chat = await pool.fetchval(
+        "SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"
+    )
+    manual_qr_message = await pool.fetchval(
+        "SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"
+    )
+    manual_on = (
+        manual_enabled
+        and bool(safe_int(manual_qr_chat))
+        and bool(safe_int(manual_qr_message))
+    )
     # Binance/USDT is handled manually by the owner via Telegram @ownergbot.
     binance_on = await setting("payment_binance_enabled", "off")
     L={
@@ -1016,7 +1027,29 @@ async def manual_payment(
         call,
         "⏳ Menyiapkan QR manual...",
     )
-    if not MANUAL_PAYMENT_ENABLED:
+    # Baca status QR Manual langsung dari database.
+    # Jangan gunakan konstanta MANUAL_PAYMENT_ENABLED karena admin dapat
+    # mengaktifkan/nonaktifkan metode pembayaran dari panel secara live.
+    pool = await database_pool()
+    manual_enabled = str(
+        await pool.fetchval(
+            "SELECT value FROM settings WHERE key=$1",
+            "payment_manual_enabled",
+        ) or "off"
+    ).lower() in {"on", "1", "true", "yes"}
+    qr_chat = safe_int(
+        await pool.fetchval(
+            "SELECT value FROM settings WHERE key=$1",
+            "manual_qr_chat_id",
+        )
+    )
+    qr_msg = safe_int(
+        await pool.fetchval(
+            "SELECT value FROM settings WHERE key=$1",
+            "manual_qr_message_id",
+        )
+    )
+    if not manual_enabled or not qr_chat or not qr_msg:
         return await call.message.answer(
             "❌ Pembayaran manual sedang tidak tersedia."
         )
