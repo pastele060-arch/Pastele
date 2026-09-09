@@ -19,40 +19,15 @@ def home_kb(
     is_creator: bool = False,
 ) -> InlineKeyboardMarkup:
     idn = lang == "id"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                _button(
-                    "📤 Upfile",
-                    callback_data="upfile",
-                ),
-                _button(
-                    "📥 Getfile",
-                    callback_data="getfile",
-                ),
-            ],
-            [
-                _button(
-                    "🛍️ Marketplace",
-                    callback_data="marketplace",
-                ),
-                _button(
-                    "👤 Akun" if idn else "👤 Account",
-                    callback_data="account",
-                ),
-            ],
-            [
-                _button(
-                    "💎 VIP / 🎨 Kreator" if idn else "💎 VIP / 🎨 Creator",
-                    callback_data="vip_creator",
-                ),
-                _button(
-                    "📂 Menu Lainnya" if idn else "📂 More Menu",
-                    callback_data="menu_lainnya",
-                ),
-            ],
-        ]
-    )
+    zh = lang == "zh"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_button("📤 Up File" if not zh else "📤 上传文件", callback_data="upfile"),
+         _button("📥 Get File" if not zh else "📥 获取文件", callback_data="getfile")],
+        [_button("🛍️ Marketplace" if not zh else "🛍️ 市场", callback_data="marketplace"),
+         _button("👤 Akun" if idn else "👤 Account" if not zh else "👤 账户", callback_data="account")],
+        [_button("💎 VIP / 🎨 Kreator" if idn else "💎 VIP / 🎨 Creator" if not zh else "💎 VIP / 🎨 创作者", callback_data="vip_creator"),
+         _button("📂 Menu Lainnya" if idn else "📂 More Menu" if not zh else "📂 更多菜单", callback_data="menu_lainnya")],
+    ])
 # ============================================================
 # ACCOUNT
 # ============================================================
