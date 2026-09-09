@@ -29,6 +29,7 @@ async def safe_copy_from_storage(
     protect_content=False,
     max_retries=6,
     delay=_COPY_DELAY,
+    caption=None,
 ):
     """Copy one stored Telegram message with flood-control protection.
 
@@ -61,6 +62,8 @@ async def safe_copy_from_storage(
                     from_chat_id=STORAGE_CHANNEL_ID,
                     message_id=message_id,
                     protect_content=protect_content,
+                    caption=caption,
+                    parse_mode="HTML" if caption else None,
                 )
                 effective_delay = delay
                 if delay == _COPY_DELAY:
