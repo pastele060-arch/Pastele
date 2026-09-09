@@ -759,18 +759,7 @@ async def payment_method_keyboard(code: str, user_id: int | None = None):
         return str(value if value is not None else default).lower() in {"on","1","true","yes"}
     cashi_on = await setting("payment_cashi_enabled", "on") and AUTO_PAYMENT_ENABLED
     bayargg_on = await setting("payment_bayargg_enabled", "on") and bool(os.getenv("BAYARGG_API_KEY", "").strip())
-    manual_enabled = await setting("payment_manual_enabled", "off")
-    manual_qr_chat = await pool.fetchval(
-        "SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"
-    )
-    manual_qr_message = await pool.fetchval(
-        "SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"
-    )
-    manual_on = (
-        manual_enabled
-        and bool(safe_int(manual_qr_chat))
-        and bool(safe_int(manual_qr_message))
-    )
+    manual_on = await setting("payment_manual_enabled", "on") and bool(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
     # Binance/USDT is handled manually by the owner via Telegram @ownergbot.
     binance_on = await setting("payment_binance_enabled", "off")
     L={
@@ -1023,35 +1012,11 @@ async def binance_payment(call: CallbackQuery):
 async def manual_payment(
     call: CallbackQuery,
 ):
-    # ACK callback immediately. Do not replace the payment keyboard with a
-    # permanent "processing" button; the manual flow must continue to the QR.
-    try:
-        await call.answer()
-    except Exception:
-        pass
-    # Baca status QR Manual langsung dari database.
-    # Jangan gunakan konstanta MANUAL_PAYMENT_ENABLED karena admin dapat
-    # mengaktifkan/nonaktifkan metode pembayaran dari panel secara live.
-    pool = await database_pool()
-    manual_enabled = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "payment_manual_enabled",
-        ) or "off"
-    ).lower() in {"on", "1", "true", "yes"}
-    qr_chat = safe_int(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_chat_id",
-        )
+    await show_payment_loading(
+        call,
+        "⏳ Menyiapkan QR manual...",
     )
-    qr_msg = safe_int(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_message_id",
-        )
-    )
-    if not manual_enabled or not qr_chat or not qr_msg:
+    if not MANUAL_PAYMENT_ENABLED:
         return await call.message.answer(
             "❌ Pembayaran manual sedang tidak tersedia."
         )
@@ -2095,62 +2060,401 @@ async def show_existing_manual(
     purchase,
     file,
 ):
-    """Resend the manual QR for an existing pending manual purchase."""
-    pool = await database_pool()
-    enabled = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "payment_manual_enabled",
-        ) or "off"
-    ).lower() in {"on", "1", "true", "yes"}
-    qr_file_id = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_file_id",
-        ) or MANUAL_QR_FILE_ID or ""
-    ).strip()
-    if not enabled or not qr_file_id:
+    if not MANUAL_PAYMENT_ENABLED:
         return await call.message.answer(
-            "❌ QR manual belum tersedia. Admin perlu menjalankan /qrid dan mengatur QR Manual terlebih dahulu."
+            "❌ QR manual sedang tidak tersedia."
         )
-
-    keyboard = await manual_payment_keyboard(file["code"])
-    price = safe_int(file.get("price"))
-    caption = (
-        "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
-        f"📄 File: <b>{clean_html(file.get('title'))}</b>\n"
-        f"🔑 Code: <code>{clean_html(file['code'])}</code>\n"
-        f"💰 Harga: <b>{format_rupiah(price)}</b>\n\n"
-        "Scan QR manual di atas, bayar sesuai nominal, lalu tekan "
-        "<b>✅ Saya Sudah Bayar</b>."
+    keyboard = await manual_payment_keyboard(
+        file["code"]
     )
-    msg = None
+    price = safe_int(
+        file.get("price")
+    )
     try:
-        msg = await call.bot.send_photo(
-            chat_id=call.from_user.id, photo=qr_file_id,
-            caption=caption, parse_mode="HTML", reply_markup=keyboard,
+        msg = await call.bot.copy_message(
+            chat_id=call.message.chat.id,
+            from_chat_id=qr_chat,
+            message_id=qr_msg,
+            caption=(
+                "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
+                f"📄 <b>{clean_html(file.get('title'))}</b>\n\n"
+                f"🔑 Code:\n"
+                f"<code>{clean_html(file['code'])}</code>\n\n"
+                f"💰 <b>{format_rupiah(price)}</b>\n\n"
+                "Scan QR manual di atas.\n\n"
+                "Setelah pembayaran, tekan "
+                "<b>✅ Saya Sudah Bayar</b>."
+            ),
+            parse_mode="HTML",
+            reply_markup=keyboard,
         )
-    except Exception:
-        logger.exception("MANUAL QR existing send_photo failed")
-        try:
-            msg = await call.bot.send_document(
-                chat_id=call.from_user.id, document=qr_file_id,
-                caption=caption, parse_mode="HTML", reply_markup=keyboard,
-            )
-        except Exception:
-            logger.exception("MANUAL QR existing send_document failed")
-    if not msg:
-        return await call.message.answer(
-            "❌ QR Manual gagal dikirim. Admin perlu set QR Manual ulang dengan /qrid."
-        )
-    try:
         await execute(
-            "UPDATE file_purchases SET qr_message_id=$1, qr_chat_id=$2 WHERE id=$3 AND status='pending'",
-            msg.message_id, msg.chat.id, purchase["id"],
+            """
+            UPDATE file_purchases
+            SET
+                qr_message_id=$1,
+                qr_chat_id=$2
+            WHERE id=$3
+              AND status='pending'
+            """,
+            msg.message_id,
+            msg.chat.id,
+            purchase["id"],
         )
     except Exception:
-        logger.exception("Failed updating manual QR message metadata")
-
+        logger.exception(
+            "SEND EXISTING MANUAL ERROR"
+        )
+        return await call.message.answer(
+            "❌ Gagal mengirim QR manual."
+        )
+# ============================================================
+# CREATE CASHI PAYMENT
+# ============================================================
+async def create_cashi_payment(
+    call: CallbackQuery,
+    code: str,
+    file,
+):
+    if not AUTO_PAYMENT_ENABLED:
+        return await call.message.answer(
+            "❌ Pembayaran Cashi sedang tidak tersedia."
+        )
+    user_id = int(
+        call.from_user.id
+    )
+    price = safe_int(
+        file.get("price")
+    )
+    paid = await get_paid_purchase(
+        user_id,
+        code,
+    )
+    if paid:
+        return await call.message.answer(
+            "✅ Kamu sudah membeli file ini."
+        )
+    # --------------------------------------------------------
+    # ONLY CASHI ACTIVE
+    # --------------------------------------------------------
+    existing = await get_active_method_purchase(
+        user_id,
+        code,
+        "CASHI-",
+    )
+    if existing:
+        return await show_existing_cashi(
+            call,
+            existing,
+            file,
+        )
+    # Manual active TIDAK memblokir Cashi.
+    # Ini inti perubahan arsitektur.
+    result = await get_or_create_purchase(
+        user_id=user_id,
+        code=code,
+        file=file,
+        payment_prefix="CASHI-",
+    )
+    if not result:
+        return await call.message.answer(
+            "❌ Gagal membuat transaksi pembayaran."
+        )
+    purchase = result["purchase"]
+    if result.get(
+        "already_paid"
+    ):
+        return await call.message.answer(
+            "✅ Kamu sudah membeli file ini."
+        )
+    if result.get("existing"):
+        existing_method = purchase_method(purchase)
+        if existing_method == "manual":
+            return await show_existing_manual(
+                call,
+                purchase,
+                file,
+            )
+        if existing_method == "cashi":
+            return await show_existing_cashi(
+                call,
+                purchase,
+                file,
+            )
+        logger.warning(
+            "UNKNOWN EXISTING PAYMENT METHOD | purchase=%s | payment_id=%s",
+            purchase.get("id"),
+            purchase.get("payment_id"),
+        )
+        return await call.message.answer(
+            "⚠️ Transaksi pembayaran sudah ada. Silakan gunakan transaksi tersebut."
+        )
+    payment_id = str(
+        purchase.get("payment_id")
+        or ""
+    ).strip()
+    if not payment_id.startswith(
+        "CASHI-"
+    ):
+        return await call.message.answer(
+            "❌ ID transaksi Cashi tidak valid."
+        )
+    # Loading state was shown immediately by the callback entry handler.
+    # Keep the original message disabled while the gateway request runs.
+    try:
+        await call.message.edit_reply_markup(
+            reply_markup=payment_loading_keyboard()
+        )
+    except Exception:
+        pass
+    # --------------------------------------------------------
+    # CREATE CASHI
+    # --------------------------------------------------------
+    result_cashi = await cashi_create_order(
+        amount=price,
+        order_id=payment_id,
+    )
+    if not result_cashi.get(
+        "ok"
+    ):
+        if result_cashi.get(
+            "definitive"
+        ):
+            logger.warning(
+                (
+                    "CASHI DEFINITIVE FAILED "
+                    "| purchase=%s | local=%s "
+                    "| error=%s"
+                ),
+                purchase["id"],
+                payment_id,
+                result_cashi.get("error"),
+            )
+            await execute(
+                """
+                UPDATE file_purchases
+                SET status='failed'
+                WHERE id=$1
+                  AND status='pending'
+                  AND payment_id=$2
+                """,
+                purchase["id"],
+                payment_id,
+            )
+            return await call.message.answer(
+                (
+                    "❌ <b>Pembayaran Cashi gagal dibuat.</b>\n\n"
+                    "Silakan pilih metode pembayaran lain."
+                ),
+                parse_mode="HTML",
+                reply_markup=await payment_method_keyboard(
+                    code, call.from_user.id
+                ),
+            )
+        # Unknown result:
+        # JANGAN fallback manual.
+        keyboard = await payment_check_keyboard(
+            code,
+            purchase["id"],
+        )
+        return await call.message.answer(
+            (
+                "⚠️ <b>Cashi belum memberikan hasil yang pasti.</b>\n\n"
+                "Transaksi tetap disimpan dan "
+                "<b>tidak dibuat ulang</b> untuk mencegah "
+                "pembayaran ganda.\n\n"
+                "Silakan tunggu beberapa saat lalu tekan "
+                "<b>🔄 Cek Pembayaran</b>."
+            ),
+            parse_mode="HTML",
+            reply_markup=keyboard,
+        )
+    cashi_data = (
+        result_cashi.get("data")
+        or {}
+    )
+    cashi_order_id = extract_cashi_order_id(
+        cashi_data
+    )
+    if not cashi_order_id:
+        # Kalau API tidak mengembalikan order ID,
+        # kita tidak boleh mengarang order ID baru.
+        await execute(
+            """
+            UPDATE file_purchases
+            SET status='failed'
+            WHERE id=$1
+              AND status='pending'
+            """,
+            purchase["id"],
+        )
+        return await call.message.answer(
+            (
+                "❌ Cashi tidak mengembalikan "
+                "ID transaksi yang valid."
+            ),
+            reply_markup=await payment_method_keyboard(
+                code, call.from_user.id
+            ),
+        )
+    qr_url = extract_cashi_qr_url(
+        cashi_data
+    )
+    payment_url = extract_cashi_payment_url(
+        cashi_data
+    )
+    expires_at = extract_cashi_expires_at(
+        cashi_data
+    )
+    logger.info(
+        (
+            "CASHI CREATED | purchase=%s "
+            "| local=%s | gateway=%s "
+            "| qr=%s | url=%s | expires=%s"
+        ),
+        purchase["id"],
+        payment_id,
+        cashi_order_id,
+        bool(qr_url),
+        bool(payment_url),
+        expires_at,
+    )
+    # --------------------------------------------------------
+    # SAVE CASHI DATA
+    # --------------------------------------------------------
+    try:
+        saved = await fetchrow(
+            """
+            UPDATE file_purchases
+            SET
+                gateway_order_id=$1,
+                qr_image=$2,
+                payment_url=$3,
+                expires_at=$4
+            WHERE id=$5
+              AND status='pending'
+              AND payment_id=$6
+            RETURNING *
+            """,
+            cashi_order_id,
+            qr_url or None,
+            payment_url or None,
+            expires_at,
+            purchase["id"],
+            payment_id,
+        )
+    except Exception:
+        logger.exception(
+            (
+                "SAVE CASHI DATA ERROR "
+                "| purchase=%s"
+            ),
+            purchase["id"],
+        )
+        return await call.message.answer(
+            (
+                "⚠️ Pembayaran Cashi sudah dibuat, "
+                "tetapi data transaksi gagal disimpan."
+            ),
+            parse_mode="HTML",
+        )
+    if not saved:
+        return await call.message.answer(
+            (
+                "❌ Transaksi Cashi berubah saat diproses.\n"
+                "Silakan cek kembali pembayaran."
+            ),
+            parse_mode="HTML",
+        )
+    keyboard = await payment_check_keyboard(
+        code,
+        saved["id"],
+    )
+    caption = (
+        "💳 <b>PEMBAYARAN CASHI</b>\n\n"
+        f"📄 File:\n"
+        f"<b>{clean_html(file.get('title'))}</b>\n\n"
+        f"🔑 Code:\n"
+        f"<code>{clean_html(code)}</code>\n\n"
+        f"💰 Harga:\n"
+        f"<b>{format_rupiah(price)}</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "📌 <b>Cara Pembayaran</b>\n\n"
+        "1️⃣ Scan QR Cashi\n"
+        "2️⃣ Bayar sesuai nominal\n"
+        "3️⃣ Tunggu pembayaran berhasil\n"
+        "4️⃣ Tekan <b>🔄 Cek Pembayaran</b>\n\n"
+        "⚡ Pembayaran diverifikasi otomatis.\n"
+        "⚠️ Jangan melakukan pembayaran dua kali."
+    )
+    if qr_url:
+        sent_message = await send_cashi_qr(
+            call.message,
+            qr_url,
+            caption,
+            keyboard,
+        )
+        if sent_message:
+            await execute(
+                """
+                UPDATE file_purchases
+                SET
+                    qr_message_id=$1,
+                    qr_chat_id=$2
+                WHERE id=$3
+                  AND status='pending'
+                """,
+                sent_message.message_id,
+                sent_message.chat.id,
+                saved["id"],
+            )
+            return
+        logger.error(
+            (
+                "CASHI QR FAILED TO SEND "
+                "| purchase=%s"
+            ),
+            saved["id"],
+        )
+    if payment_url:
+        await call.message.answer(
+            (
+                f"{caption}\n\n"
+                "⚠️ QR tidak dapat ditampilkan.\n"
+                "Gunakan tombol <b>Bayar Sekarang</b>."
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="💳 Bayar Sekarang",
+                            url=payment_url,
+                        )
+                    ],
+                    [
+                        keyboard.inline_keyboard[0][0]
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="❌ Tutup",
+                            callback_data="close",
+                        )
+                    ],
+                ]
+            ),
+        )
+        return
+    await call.message.answer(
+        (
+            "⚠️ <b>Pembayaran Cashi sudah dibuat.</b>\n\n"
+            "QR/link belum dapat dikirim.\n\n"
+            "❗ Jangan melakukan pembayaran kedua.\n"
+            "Tekan <b>🔄 Cek Pembayaran</b> setelah beberapa saat."
+        ),
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
 # ============================================================
 # CREATE MANUAL PAYMENT
 # ============================================================
@@ -2159,66 +2463,80 @@ async def create_manual_payment(
     code: str,
     file,
 ):
-    pool = await database_pool()
-
-    enabled = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "payment_manual_enabled",
-        ) or "off"
-    ).lower() in {"on", "1", "true", "yes"}
-
-    qr_file_id = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_file_id",
-        ) or ""
-    ).strip()
-
-    if not enabled or not qr_file_id:
-        return await call.message.answer(
-            "❌ QR manual belum tersedia. Admin perlu mengatur QR Manual terlebih dahulu."
-        )
-
-    user_id = int(call.from_user.id)
-    code = str(file.get("code") or code).strip()
-
-    paid = await get_paid_purchase(user_id, code)
+    pool=await get_pool_local()
+    enabled=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "payment_manual_enabled") or "on").lower() in {"on","1","true","yes"}
+    qr_chat=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"))
+    qr_msg=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    if not enabled or not qr_chat or not qr_msg:
+        return await call.message.answer("❌ QR manual belum dikonfigurasi.")
+    user_id = int(
+        call.from_user.id
+    )
+    paid = await get_paid_purchase(
+        user_id,
+        code,
+    )
     if paid:
-        return await call.message.answer("✅ Kamu sudah membeli file ini.")
-
-    # Reuse an existing pending manual transaction if one exists.
-    existing = await get_active_method_purchase(user_id, code, "MANUAL-")
+        return await call.message.answer(
+            "✅ Kamu sudah membeli file ini."
+        )
+    # ONLY MANUAL ACTIVE.
+    # Cashi aktif tetap boleh bersamaan.
+    existing = await get_active_method_purchase(
+        user_id,
+        code,
+        "MANUAL-",
+    )
     if existing:
-        return await show_existing_manual(call, existing, file)
-
+        return await show_existing_manual(
+            call,
+            existing,
+            file,
+        )
     result = await get_or_create_purchase(
         user_id=user_id,
         code=code,
         file=file,
         payment_prefix="MANUAL-",
     )
-
     if not result:
-        return await call.message.answer("❌ Gagal membuat transaksi.")
-
+        return await call.message.answer(
+            "❌ Gagal membuat transaksi."
+        )
     purchase = result["purchase"]
-
-    if result.get("already_paid"):
-        return await call.message.answer("✅ Kamu sudah membeli file ini.")
-
+    if result.get(
+        "already_paid"
+    ):
+        return await call.message.answer(
+            "✅ Kamu sudah membeli file ini."
+        )
     if result.get("existing"):
         existing_method = purchase_method(purchase)
-        if existing_method == "manual":
-            return await show_existing_manual(call, purchase, file)
         if existing_method == "cashi":
-            return await show_existing_cashi(call, purchase, file)
+            return await show_existing_cashi(
+                call,
+                purchase,
+                file,
+            )
+        if existing_method == "manual":
+            return await show_existing_manual(
+                call,
+                purchase,
+                file,
+            )
+        logger.warning(
+            "UNKNOWN EXISTING PAYMENT METHOD | purchase=%s | payment_id=%s",
+            purchase.get("id"),
+            purchase.get("payment_id"),
+        )
         return await call.message.answer(
             "⚠️ Transaksi pembayaran sudah ada. Silakan gunakan transaksi tersebut."
         )
-
-    return await send_manual_payment(call, purchase, file)
-
+    return await send_manual_payment(
+        call,
+        purchase,
+        file,
+    )
 # ============================================================
 # SEND MANUAL PAYMENT
 # ============================================================
@@ -2227,85 +2545,67 @@ async def send_manual_payment(
     purchase,
     file,
 ):
-    pool = await database_pool()
-
-    enabled = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "payment_manual_enabled",
-        ) or "off"
-    ).lower() in {"on", "1", "true", "yes"}
-
-    qr_file_id = str(
-        await pool.fetchval(
-            "SELECT value FROM settings WHERE key=$1",
-            "manual_qr_file_id",
-        ) or ""
+    pool=await get_pool_local()
+    enabled=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "payment_manual_enabled") or "on").lower() in {"on","1","true","yes"}
+    qr_chat=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"))
+    qr_msg=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    if not enabled or not qr_chat or not qr_msg:
+        return await call.message.answer("❌ QR manual belum tersedia.")
+    code = str(
+        file.get("code")
+        or ""
     ).strip()
-
-    if not enabled or not qr_file_id:
-        return await call.message.answer(
-            "❌ QR manual belum tersedia. Admin perlu mengatur QR Manual terlebih dahulu."
-        )
-
-    code = str(file.get("code") or "").strip()
-    price = safe_int(file.get("price"))
-    keyboard = await manual_payment_keyboard(code)
-
-    caption = (
-        "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
-        f"📄 File:\n<b>{clean_html(file.get('title'))}</b>\n\n"
-        f"🔑 Code:\n<code>{clean_html(code)}</code>\n\n"
-        f"💰 Harga:\n<b>{format_rupiah(price)}</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "📌 <b>Cara Pembayaran</b>\n\n"
-        "1️⃣ Scan QR manual\n"
-        "2️⃣ Bayar sesuai nominal\n"
-        "3️⃣ Pastikan pembayaran berhasil\n"
-        "4️⃣ Tekan <b>✅ Saya Sudah Bayar</b>\n\n"
-        "⚠️ Setelah menekan tombol, admin akan memverifikasi pembayaran."
+    price = safe_int(
+        file.get("price")
     )
-
-    msg = None
-
-    # QR from admin is stored as a Telegram file_id. Send it directly.
+    keyboard = await manual_payment_keyboard(
+        code
+    )
     try:
-        msg = await call.bot.send_photo(
-            chat_id=call.from_user.id,
-            photo=qr_file_id,
-            caption=caption,
+        msg = await call.bot.copy_message(
+            chat_id=call.message.chat.id,
+            from_chat_id=qr_chat,
+            message_id=qr_msg,
+            caption=(
+                "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
+                f"📄 File:\n"
+                f"<b>{clean_html(file.get('title'))}</b>\n\n"
+                f"🔑 Code:\n"
+                f"<code>{clean_html(code)}</code>\n\n"
+                f"💰 Harga:\n"
+                f"<b>{format_rupiah(price)}</b>\n\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "📌 <b>Cara Pembayaran</b>\n\n"
+                "1️⃣ Scan QR manual\n"
+                "2️⃣ Bayar sesuai nominal\n"
+                "3️⃣ Pastikan pembayaran berhasil\n"
+                "4️⃣ Tekan <b>✅ Saya Sudah Bayar</b>\n\n"
+                "⚠️ Setelah menekan tombol, admin akan "
+                "memverifikasi pembayaran."
+            ),
             parse_mode="HTML",
             reply_markup=keyboard,
         )
-    except Exception:
-        logger.exception("MANUAL QR send_photo failed; trying document fallback")
-        try:
-            msg = await call.bot.send_document(
-                chat_id=call.from_user.id,
-                document=qr_file_id,
-                caption=caption,
-                parse_mode="HTML",
-                reply_markup=keyboard,
-            )
-        except Exception:
-            logger.exception("MANUAL QR send_document failed")
-
-    if not msg:
-        return await call.message.answer(
-            "❌ QR Manual gagal dikirim. Silakan admin Set QR Manual ulang dengan mengirim QR sebagai foto."
+        await execute(
+            """
+            UPDATE file_purchases
+            SET
+                qr_message_id=$1,
+                qr_chat_id=$2
+            WHERE id=$3
+              AND status='pending'
+            """,
+            msg.message_id,
+            msg.chat.id,
+            purchase["id"],
         )
-
-    await execute(
-        """
-        UPDATE file_purchases
-        SET qr_message_id=$1, qr_chat_id=$2
-        WHERE id=$3 AND status='pending'
-        """,
-        msg.message_id,
-        msg.chat.id,
-        purchase["id"],
-    )
-
+    except Exception:
+        logger.exception(
+            "SEND MANUAL PAYMENT ERROR"
+        )
+        return await call.message.answer(
+            "❌ Gagal mengirim QR manual."
+        )
 # ============================================================
 # CLAIM PURCHASE PAID
 # ============================================================
@@ -2920,30 +3220,22 @@ async def complete_success_side_effects(
         purchase,
     )
     # ========================================================
-    # USER SUCCESS -> USE THE SAME GET FILE / OPEN MENU FLOW
+    # AFTER PAYMENT -> THE SAME GET FILE / OPEN MENU
     # ========================================================
-    # Setelah pembayaran sukses, jangan memakai media_keyboard()
-    # lama di pay.py. Arahkan ke renderer Get File yang sama seperti
-    # kode gratis/paid biasa. Renderer tersebut memakai open_menu.py
-    # untuk membuat tombol:
-    #   📂 Open Page / 📤 Open All
-    # dan otomatis mengikuti bahasa user.
+    # Payment success must never use the old payment-only media menu.
+    # Re-enter the canonical Get File flow so it renders open_menu.py.
     try:
         from handlers.getfile import process_code
-
-        # process_code() akan membaca purchase yang baru saja berstatus
-        # paid, lalu menampilkan: FOUND FILE + open_menu.py keyboard.
         await process_code(message, code)
     except Exception:
         logger.exception(
-            "REDIRECT TO OPEN MENU ERROR | code=%s | user=%s",
+            "OPEN MENU AFTER PAYMENT ERROR | code=%s | user=%s",
             code,
             user_id,
         )
         try:
             await message.answer(
-                "❌ Pembayaran berhasil, tetapi menu file gagal dibuka. "
-                "Silakan kirim kembali kode untuk membuka file."
+                "❌ Pembayaran berhasil, tetapi Open Page gagal dibuka. Silakan masukkan code kembali melalui Get File."
             )
         except Exception:
             pass
