@@ -2582,6 +2582,7 @@ async def send_manual_payment(
     enabled=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "payment_manual_enabled") or "on").lower() in {"on","1","true","yes"}
     qr_chat=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id"))
     qr_msg=safe_int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id"))
+    qr_file_id=str(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_file_id") or "").strip()
     if not enabled or not qr_chat or not qr_msg:
         return await call.message.answer("❌ QR manual belum tersedia.")
     code = str(
@@ -2632,12 +2633,82 @@ async def send_manual_payment(
             msg.chat.id,
             purchase["id"],
         )
-    except Exception:
+    except Exception as exc:
         logger.exception(
-            "SEND MANUAL PAYMENT ERROR"
+            "SEND MANUAL PAYMENT COPY ERROR | chat=%s msg=%s",
+            qr_chat,
+            qr_msg,
         )
+
+        # Fallback: kirim langsung memakai file_id yang disimpan oleh / Set QR Manual.
+        # Ini mengatasi kasus bot tidak dapat copy_message dari source message,
+        # tetapi file_id masih valid dan dapat dikirim ulang oleh Bot API.
+        if qr_file_id:
+            try:
+                msg = await call.bot.send_photo(
+                    chat_id=call.message.chat.id,
+                    photo=qr_file_id,
+                    caption=(
+                        "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
+                        f"📄 File:\n<b>{clean_html(file.get('title'))}</b>\n\n"
+                        f"🔑 Code:\n<code>{clean_html(code)}</code>\n\n"
+                        f"💰 Harga:\n<b>{format_rupiah(price)}</b>\n\n"
+                        "━━━━━━━━━━━━━━━━━━\n"
+                        "📌 <b>Cara Pembayaran</b>\n\n"
+                        "1️⃣ Scan QR manual\n"
+                        "2️⃣ Bayar sesuai nominal\n"
+                        "3️⃣ Pastikan pembayaran berhasil\n"
+                        "4️⃣ Tekan <b>✅ Saya Sudah Bayar</b>\n\n"
+                        "⚠️ Setelah menekan tombol, admin akan memverifikasi pembayaran."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                await execute(
+                    """
+                    UPDATE file_purchases
+                    SET qr_message_id=$1, qr_chat_id=$2
+                    WHERE id=$3 AND status='pending'
+                    """,
+                    msg.message_id,
+                    msg.chat.id,
+                    purchase["id"],
+                )
+                return
+            except Exception:
+                logger.exception("SEND MANUAL PAYMENT FILE_ID FALLBACK ERROR")
+
+            try:
+                msg = await call.bot.send_document(
+                    chat_id=call.message.chat.id,
+                    document=qr_file_id,
+                    caption=(
+                        "📷 <b>PEMBAYARAN MANUAL</b>\n\n"
+                        f"📄 File: <b>{clean_html(file.get('title'))}</b>\n"
+                        f"🔑 Code: <code>{clean_html(code)}</code>\n"
+                        f"💰 Harga: <b>{format_rupiah(price)}</b>\n\n"
+                        "Scan QR manual, bayar sesuai nominal, lalu tekan "
+                        "<b>✅ Saya Sudah Bayar</b>."
+                    ),
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                )
+                await execute(
+                    """
+                    UPDATE file_purchases
+                    SET qr_message_id=$1, qr_chat_id=$2
+                    WHERE id=$3 AND status='pending'
+                    """,
+                    msg.message_id,
+                    msg.chat.id,
+                    purchase["id"],
+                )
+                return
+            except Exception:
+                logger.exception("SEND MANUAL PAYMENT DOCUMENT FALLBACK ERROR")
+
         return await call.message.answer(
-            "❌ Gagal mengirim QR manual."
+            "❌ Gagal mengirim QR manual. Pastikan QR masih tersimpan dan bot dapat mengaksesnya."
         )
 # ============================================================
 # CLAIM PURCHASE PAID
