@@ -91,6 +91,10 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
         media_caption = media_watermark(lang, media_code, bot_name, pos, total)
 
         try:
+            try:
+                await bot.send_chat_action(chat_id=chat_id, action="typing")
+            except Exception:
+                pass
             result = await safe_copy_from_storage(
                 bot, chat_id, message_id, protect_content=protect,
                 delay=0.0, caption=media_caption)
@@ -100,12 +104,19 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
                 failed += 1
         except TelegramRetryAfter as exc:
             await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
-            failed += 1
+            try:
+                result = await safe_copy_from_storage(
+                    bot, chat_id, message_id, protect_content=protect,
+                    delay=0.0, caption=media_caption)
+                success += 1 if result is not None else 0
+                failed += 0 if result is not None else 1
+            except Exception:
+                failed += 1
         except Exception:
             failed += 1
 
         if pos < batch_end:
-            await asyncio.sleep(send_interval)
+            await asyncio.sleep(max(float(send_interval), 2.0))
 
     remaining = total - batch_end
     if remaining > 0:

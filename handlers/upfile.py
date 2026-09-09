@@ -46,7 +46,7 @@ UPDATE_DELAY = 0.7
 
 # Delay kecil setelah copy berhasil.
 # Kecepatan utama didapat dari tidak memakai global copy lock.
-COPY_DELAY = 1.0
+COPY_DELAY = 1.5
 
 # Maksimal copy storage bersamaan untuk seluruh bot.
 # 2 = aman dan cukup cepat.
@@ -398,6 +398,10 @@ async def copy_to_storage(
         retries = 0
         while True:
             try:
+                try:
+                    await bot.send_chat_action(chat_id=from_chat_id, action="typing")
+                except Exception:
+                    pass
                 copied = await bot.copy_message(
                     chat_id=STORAGE_CHANNEL_ID,
                     from_chat_id=from_chat_id,

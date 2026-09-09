@@ -24,6 +24,8 @@ from utils.bayargg import BayarGG
 from config_vip import VIP_PACKAGES
 from config import MANUAL_QR_FILE_ID, ADMIN_IDS
 from utils.user_lang import get_user_language
+from utils.payment_methods import payment_methods_enabled, payment_selector_markup, qr_selector_markup
+from utils.cashi import Cashi
 from states import VipManualState
 logger = logging.getLogger(__name__)
 router = Router()
@@ -531,14 +533,99 @@ async def buy_vip(
             "❌ Paket tidak ditemukan."
         )
         return
-    # ========================================================
-    # SEMUA PEMBELIAN VIP/VVIP -> QR MANUAL
-    # ========================================================
-    return await create_manual_vip_payment(
-        call,
-        paket_id,
-        paket,
+    lang = await get_user_language(call.from_user.id)
+    methods = await payment_methods_enabled()
+    labels = {
+        "id": "💳 <b>Pilih Metode Pembayaran</b>\n\nPilih metode pembayaran untuk paket ini.",
+        "en": "💳 <b>Choose Payment Method</b>\n\nChoose a payment method for this package.",
+        "zh": "💳 <b>选择支付方式</b>\n\n请选择此套餐的支付方式。",
+    }
+    await call.message.edit_text(
+        labels.get(lang, labels["id"]) + f"\n\n📦 <b>{safe_html(paket['name'])}</b>\n💰 <b>{rupiah(paket['price'])}</b>",
+        parse_mode="HTML",
+        reply_markup=payment_selector_markup(f"vipmethod:{paket_id}", lang, methods),
     )
+@router.callback_query(F.data.startswith("vipmethod:"))
+async def vip_method(call: CallbackQuery):
+    await safe_callback_answer(call)
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        return
+    paket_id, method = parts[1], parts[2]
+    paket = VIP_PACKAGES.get(paket_id)
+    if not paket:
+        return await call.message.answer("❌ Paket tidak ditemukan.")
+    if method == "cancel":
+        return await open_vvip(call.message, call.from_user.id)
+    if method == "qr":
+        lang = await get_user_language(call.from_user.id)
+        methods = await payment_methods_enabled()
+        return await call.message.edit_reply_markup(reply_markup=qr_selector_markup(f"vipmethod:{paket_id}", lang, methods))
+    if method == "cashi":
+        return await _create_cashi_vip(call, paket_id, paket)
+    if method == "bayargg":
+        return await _create_auto_vip(call, paket_id, paket)
+    if method == "manual":
+        return await create_manual_vip_payment(call, paket_id, paket)
+    if method == "back":
+        lang = await get_user_language(call.from_user.id)
+        return await call.message.edit_reply_markup(reply_markup=payment_selector_markup(f"vipmethod:{paket_id}", lang, await payment_methods_enabled()))
+
+async def _create_cashi_vip(call: CallbackQuery, paket_id: str, paket: dict):
+    pool = await get_pool()
+    user_id = call.from_user.id
+    try:
+        payment = await Cashi.create_payment(paket["price"], f"{paket['name']} - {paket['days']} Hari", call.from_user.full_name)
+    except Exception:
+        logger.exception("VIP CASHI CREATE ERROR")
+        return await call.message.answer("❌ Cashi sedang tidak tersedia.")
+    if not payment:
+        return await call.message.answer("❌ Cashi gagal membuat pembayaran.")
+    invoice = str(payment.get("invoice_id") or payment.get("order_id") or "").strip()
+    if not invoice:
+        return await call.message.answer("❌ Invoice Cashi tidak valid.")
+    await pool.execute("""
+        INSERT INTO payments(order_id,user_id,code,reference,amount,status,provider,invoice_id,payment_url,expires_at,type)
+        VALUES($1,$2,$3,$4,$5,'pending','cashi',$6,$7,$8,'vip')
+        ON CONFLICT(invoice_id) DO NOTHING
+    """, invoice, user_id, paket_id, invoice, paket["price"], invoice, payment.get("payment_url"), payment.get("expires_at"))
+    qr = payment.get("qr_string") or payment.get("qr_image")
+    text = f"💳 <b>VIP • CASHI</b>\n\n📦 {safe_html(paket['name'])}\n💰 <b>{rupiah(paket['price'])}</b>\n🧾 <code>{safe_html(invoice)}</code>\n\nScan QR lalu tekan cek pembayaran."
+    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Cek Pembayaran",callback_data=f"vipcashicheck:{invoice}")],[InlineKeyboardButton(text="❌ Batal",callback_data=f"vipmethod:{paket_id}:cancel")]])
+    if qr:
+        try:
+            raw = qr
+            if isinstance(raw,str) and raw.startswith("data:image/"):
+                import base64
+                raw=base64.b64decode(raw.split(',',1)[1])
+                photo=BufferedInputFile(raw,filename="vip-cashi.png")
+            else:
+                buf=BytesIO(); qrcode.make(raw).save(buf,format="PNG"); photo=BufferedInputFile(buf.getvalue(),filename="vip-cashi.png")
+            await call.message.answer_photo(photo,caption=text,parse_mode="HTML",reply_markup=kb)
+            return
+        except Exception:
+            logger.exception("VIP CASHI QR ERROR")
+    await call.message.answer(text,parse_mode="HTML",reply_markup=kb)
+
+@router.callback_query(F.data.startswith("vipcashicheck:"))
+async def vip_cashi_check(call: CallbackQuery):
+    await safe_callback_answer(call)
+    invoice=call.data.split(":",1)[1].strip()
+    pool=await get_pool()
+    tx=await pool.fetchrow("SELECT * FROM payments WHERE invoice_id=$1 AND user_id=$2 AND type='vip'",invoice,call.from_user.id)
+    if not tx: return await call.message.answer("❌ Invoice tidak ditemukan.")
+    result=await Cashi.check_payment(invoice)
+    status=str((result or {}).get("status") or "").lower()
+    if status not in {"settled","paid","success","completed"}:
+        return await call.answer("⏳ Pembayaran belum diterima.",show_alert=True)
+    updated=await pool.fetchrow("UPDATE payments SET status='paid',paid_at=NOW() WHERE id=$1 AND status!='paid' RETURNING id",tx["id"])
+    if not updated:
+        return await call.message.answer("✅ Pembayaran sudah diproses.")
+    paket=VIP_PACKAGES.get(str(tx["code"]))
+    days=int((paket or {}).get("days",1))
+    await pool.execute("UPDATE users SET vip=TRUE, vip_until=CASE WHEN vip_until IS NULL OR vip_until<NOW() THEN NOW()+($2||' days')::interval ELSE vip_until+($2||' days')::interval END WHERE user_id=$1",call.from_user.id,days)
+    await call.message.answer(f"🎉 <b>VIP aktif!</b>\n\nDurasi: <b>{days} hari</b>",parse_mode="HTML")
+
 # ============================================================
 # EXTEND VIP
 # ============================================================
@@ -759,8 +846,14 @@ async def create_manual_vip_payment(
     # SEND QR MANUAL
     # --------------------------------------------------------
     try:
-        await call.message.answer_photo(
-            MANUAL_QR_FILE_ID,
+        qr_chat = int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_chat_id") or 0)
+        qr_msg = int(await pool.fetchval("SELECT value FROM settings WHERE key=$1", "manual_qr_message_id") or 0)
+        if not qr_chat or not qr_msg:
+            raise RuntimeError("Manual QR belum diset. Gunakan /qrid.")
+        await call.bot.copy_message(
+            chat_id=call.message.chat.id,
+            from_chat_id=qr_chat,
+            message_id=qr_msg,
             caption=caption,
             parse_mode="HTML",
             reply_markup=kb,

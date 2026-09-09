@@ -182,10 +182,18 @@ async def send_page(bot, chat_id, user_id, code, page=1):
         return False
 
     try:
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+        except Exception:
+            pass
         await bot.send_media_group(chat_id=chat_id, media=album, protect_content=protect)
     except TelegramRetryAfter as exc:
         await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
-        return False
+        try:
+            await bot.send_chat_action(chat_id=chat_id, action="typing")
+            await bot.send_media_group(chat_id=chat_id, media=album, protect_content=protect)
+        except Exception:
+            return False
     except Exception:
         return False
 
