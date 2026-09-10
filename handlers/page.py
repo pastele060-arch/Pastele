@@ -18,7 +18,7 @@ from aiogram.types import (
 
 from database import get_pool
 from config import STORAGE_CHANNEL_ID
-from utils.share_unlock import get_share_status, ensure_share_progress, gate_message
+from utils.points import get_points, charge_points, MEDIA_COST, fmt_points
 from utils.user_lang import get_user_language
 from utils.language import media_watermark
 
@@ -123,29 +123,54 @@ async def send_page(bot, chat_id, user_id, code, page=1):
                OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2)))
           AND status='paid')""",
         user_id, code) or False
-    free_access = await pool.fetchval(
-        """SELECT EXISTS(SELECT 1 FROM free_code_progress
-           WHERE user_id=$1 AND code=$2 AND completed=TRUE)""",
-        user_id, code) or False
-    privileged = bool(owner_access or purchase_access or creator_access or free_access or
+    privileged = bool(owner_access or purchase_access or creator_access or
                       user_level in ("vip", "vvip"))
 
-    share_current, share_target, share_completed = await get_share_status(
-        pool, code, user_id, is_paid=bool(file["is_paid"]), media_count=len(media))
-    if not privileged and not share_completed:
-        await ensure_share_progress(pool, code, user_id,
-                                    is_paid=bool(file["is_paid"]), media_count=len(media))
-        text, kb = await gate_message(
-            bot, chat_id, code=code, title=str(file["title"] or code),
-            progress=share_current, target=share_target,
-            is_paid=bool(file["is_paid"]))
-        await bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=kb)
-        return False
+    # Paid purchase also requires point balance equal to the code price.
+    if purchase_access and not owner_access and not creator_access and user_level not in ("vip", "vvip"):
+        from utils.points import unlock_paid_code, get_points, fmt_points
+        unlocked = await pool.fetchval("SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(code)=LOWER($2) LIMIT 1", user_id, file["code"])
+        if not unlocked:
+            ok, pts = await unlock_paid_code(pool,user_id,file["code"],int(file.get("price") or 0))
+            if not ok:
+                await bot.send_message(chat_id, f"⭐ <b>POIN TIDAK CUKUP</b>\n\nButuh <b>{fmt_points(file.get('price') or 0)} poin</b>.\nPoin kamu: <b>{fmt_points(pts)}</b>.", parse_mode="HTML")
+                return False
+
+    # FREE files consume 1.20 points per successfully opened media.
+    # Require enough points for the whole page before sending the album.
+    if not privileged and not bool(file["is_paid"]):
+        needed = (len(media[(max(1,int(page))-1)*PAGE_SIZE:max(1,int(page))*PAGE_SIZE]) * MEDIA_COST)
+        points = await get_points(pool, user_id)
+        if points < needed:
+            lang = await get_user_language(user_id)
+            text = {
+                "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nHalaman ini membutuhkan <b>{fmt_points(needed)} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.",
+                "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis page needs <b>{fmt_points(needed)} points</b>.\nYour points: <b>{fmt_points(points)}</b>.",
+                "zh": f"⭐ <b>积分不足</b>\n\n此页需要 <b>{fmt_points(needed)} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。",
+            }
+            await bot.send_message(chat_id,text.get(lang,text["id"]),parse_mode="HTML")
+            return False
 
     total_pages = max(1, (len(media) + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(1, min(int(page), total_pages))
     start = (page - 1) * PAGE_SIZE
     chunk = media[start:start + PAGE_SIZE]
+
+    if not privileged and not bool(file["is_paid"]):
+        charge_count = len([x for x in chunk if isinstance(x, dict) and x.get("file_id")])
+        if charge_count:
+            try:
+                await charge_points(pool, user_id, MEDIA_COST * charge_count, "media_open", f"page:{user_id}:{code}:{page}", f"Open page {page} of {code}")
+            except Exception:
+                lang = await get_user_language(user_id)
+                points = await get_points(pool,user_id)
+                text={
+                    "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nPoin kamu: <b>{fmt_points(points)}</b>.",
+                    "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nYour points: <b>{fmt_points(points)}</b>.",
+                    "zh": f"⭐ <b>积分不足</b>\n\n你的积分：<b>{fmt_points(points)}</b>。",
+                }
+                await bot.send_message(chat_id,text.get(lang,text["id"]),parse_mode="HTML")
+                return False
 
     # Unique view only on first page.
     if page == 1:
@@ -184,6 +209,7 @@ async def send_page(bot, chat_id, user_id, code, page=1):
     if not album:
         return False
 
+    charged_count = len(album) if (not privileged and not bool(file["is_paid"])) else 0
     try:
         try:
             await bot.send_chat_action(chat_id=chat_id, action="typing")
@@ -196,8 +222,18 @@ async def send_page(bot, chat_id, user_id, code, page=1):
             await bot.send_chat_action(chat_id=chat_id, action="typing")
             await bot.send_media_group(chat_id=chat_id, media=album, protect_content=protect)
         except Exception:
+            if charged_count:
+                try:
+                    from utils.points import add_points
+                    await add_points(pool,user_id,MEDIA_COST*charged_count,"media_refund",f"page_refund:{user_id}:{code}:{page}",f"Refund failed page {page} of {code}")
+                except Exception: pass
             return False
     except Exception:
+        if charged_count:
+            try:
+                from utils.points import add_points
+                await add_points(pool,user_id,MEDIA_COST*charged_count,"media_refund",f"page_refund:{user_id}:{code}:{page}",f"Refund failed page {page} of {code}")
+            except Exception: pass
         return False
 
     # Compact status bubble: e.g. 1/4 for a 40-media code.

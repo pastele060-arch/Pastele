@@ -38,7 +38,7 @@ router = Router()
 # CONFIG
 # =========================================================
 
-MAX_MEDIA = 200
+MAX_MEDIA = 100
 MAX_REVIEW_PHOTOS = 5
 
 # Jangan terlalu sering edit message progress.
@@ -902,24 +902,39 @@ async def receive_media(
             )
 
         # -------------------------------------------------
-        # STORAGE — ONE MEDIA AT A TIME
+        # STORAGE POLICY
         # -------------------------------------------------
-        # Never upload several media concurrently. copy_to_storage() has
-        # a semaphore + RetryAfter backoff, so Telegram gets a controlled stream.
+        # FREE uploads stay in the user's private chat. We keep the original
+        # message_id + source_chat_id so the bot does not fill the storage
+        # channel. The Telegram file_id is also retained because it is the
+        # reliable representation needed for media albums/Open Page.
+        # PAID uploads continue to use the storage channel.
+        upload_is_paid = bool(data.get("is_paid", False))
         try:
-            copied = await copy_to_storage(
-                message.bot,
-                message.chat.id,
-                message.message_id,
-            )
-            storage_message_id = int(copied.message_id)
+            from utils.user import get_user_status
+            user_level = await get_user_status(await get_pool(), user_id)
         except Exception:
-            logger.exception("STORAGE ERROR | user=%s", user_id)
-            return await message.answer(
-                "⚠️ <b>Gagal menyimpan media ke storage.</b>\n\n"
-                "Media belum ditambahkan. Silakan coba lagi.",
-                parse_mode="HTML",
-            )
+            user_level = "free"
+
+        use_storage = upload_is_paid or user_level != "free"
+        storage_message_id = None
+        source_chat_id = int(message.chat.id)
+
+        if use_storage:
+            try:
+                copied = await copy_to_storage(
+                    message.bot,
+                    message.chat.id,
+                    message.message_id,
+                )
+                storage_message_id = int(copied.message_id)
+            except Exception:
+                logger.exception("STORAGE ERROR | user=%s", user_id)
+                return await message.answer(
+                    "⚠️ <b>Gagal menyimpan media ke storage.</b>\n\n"
+                    "Media belum ditambahkan. Silakan coba lagi.",
+                    parse_mode="HTML",
+                )
 
         # -------------------------------------------------
         # APPEND
@@ -927,7 +942,11 @@ async def receive_media(
 
         media.append({
 
-            "message_id": storage_message_id,
+            # For FREE: original user message id.
+            # For paid/VIP storage: copied storage message id.
+            "message_id": storage_message_id or int(message.message_id),
+
+            "source_chat_id": source_chat_id if not use_storage else None,
 
             "file_id": file_id,
 
@@ -958,7 +977,9 @@ async def receive_media(
 
         if progress_id:
 
-            storage_text = "☁️ Storage Channel"
+            storage_text = "☁️ Storage Channel" if any(
+                item.get("source_chat_id") is None for item in media
+            ) else "💬 Message ID (tanpa Storage)"
 
             await safe_update(
 
@@ -982,19 +1003,23 @@ async def receive_media(
             )
 
         # -------------------------------------------------
-        # DELETE USER MESSAGE
+        # DELETE USER MESSAGE ONLY WHEN COPIED TO STORAGE
         # -------------------------------------------------
-
-        try:
-            await message.delete()
-        except Exception:
-            pass
+        # FREE uploads intentionally keep the original message alive because
+        # there is no storage-channel copy to retrieve from later.
+        if use_storage:
+            try:
+                await message.delete()
+            except Exception:
+                pass
 
         logger.info(
-            "MEDIA ADDED | user=%s | type=%s | total=%s",
+            "MEDIA ADDED | user=%s | type=%s | total=%s | storage=%s | message_id=%s",
             user_id,
             file_type,
             len(media),
+            use_storage,
+            message.message_id,
         )
 
 
@@ -2175,6 +2200,33 @@ async def finalize_save(
         media_count = len(media)
 
         # =================================================
+        # PAID FILE -> MOVE FREE-COLLECTED MESSAGES TO STORAGE
+        # =================================================
+        # Media may have been collected before the user chose PAID. If so,
+        # copy each original message to storage now, sequentially, and only
+        # delete the original after the storage copy succeeds. FREE files
+        # never enter this block and remain message_id/source_chat_id based.
+        if is_paid:
+            for item in media:
+                source_chat_id = item.get("source_chat_id")
+                original_message_id = item.get("message_id")
+                if source_chat_id and original_message_id:
+                    try:
+                        copied = await copy_to_storage(
+                            message.bot, int(source_chat_id), int(original_message_id)
+                        )
+                        item["message_id"] = int(copied.message_id)
+                        item["source_chat_id"] = None
+                        try:
+                            await message.bot.delete_message(int(source_chat_id), int(original_message_id))
+                        except Exception:
+                            pass
+                    except Exception:
+                        logger.exception("PAID STORAGE MIGRATION ERROR | user=%s code=%s message=%s",user_id,code,original_message_id)
+                        await state.update_data(saving=False)
+                        return await message.answer("⚠️ <b>Gagal memindahkan media ke storage.</b>\n\nFile belum dibuat. Silakan coba simpan lagi.",parse_mode="HTML")
+
+        # =================================================
         # JSON
         # =================================================
 
@@ -2214,6 +2266,8 @@ async def finalize_save(
                         "message_id"
                     ),
 
+                    item.get("source_chat_id"),
+
                     item.get(
                         "file_id"
                     ),
@@ -2241,6 +2295,19 @@ async def finalize_save(
         # =================================================
 
         pool = await get_pool()
+
+        # FREE upload economy: 1 point/media cost, 20% returned as reward.
+        # Charge atomically before creating the file so a failed upload cannot
+        # silently create a debt. Paid/VIP/creator uploads keep existing flow.
+        try:
+            from utils.user import get_user_status
+            current_level = await get_user_status(pool, user_id)
+        except Exception:
+            current_level = "free"
+        free_uploader = (current_level == "free" and not is_paid)
+        # FREE uploads never consume points.
+        # Reward is granted only for completed blocks of 50 media:
+        # 1-49 => 0, 50-99 => +10, 100 => +20.
 
         async with pool.acquire() as conn:
 
@@ -2362,6 +2429,7 @@ async def finalize_save(
                         INSERT INTO medias (
                             code,
                             message_id,
+                            source_chat_id,
                             file_id,
                             file_type,
                             file_size,
@@ -2375,7 +2443,8 @@ async def finalize_save(
                             $4,
                             $5,
                             $6,
-                            $7
+                            $7,
+                            $8
                         )
                         """,
 
@@ -2395,6 +2464,42 @@ async def finalize_save(
                        ON CONFLICT(file_code,position) DO UPDATE SET media_code=EXCLUDED.media_code, bot_username=EXCLUDED.bot_username""",
                     media_code_rows,
                 )
+
+                # =================================================
+                # UPLOAD POINT REWARD
+                # =================================================
+                # Uploading never costs points.
+                # Reward is granted only for completed blocks of 50:
+                # 1-49 media = 0 points
+                # 50-99 media = +10 points
+                # 100 media = +20 points.
+                from decimal import Decimal
+                upload_reward = Decimal(media_count // 50) * Decimal("10")
+                if upload_reward > 0:
+                    row_points = await conn.fetchrow(
+                        "SELECT points FROM users WHERE user_id=$1 FOR UPDATE",
+                        user_id,
+                    )
+                    if row_points:
+                        current_points = Decimal(str(row_points["points"] or 0))
+                        new_points = current_points + upload_reward
+                        reward_ref = f"upload_reward:{user_id}:{code}"
+                        await conn.execute(
+                            "UPDATE users SET points=$1, updated_at=NOW() WHERE user_id=$2",
+                            new_points,
+                            user_id,
+                        )
+                        await conn.execute(
+                            """INSERT INTO point_transactions(
+                                user_id, amount, balance_after, type, reference, description
+                            ) VALUES($1,$2,$3,'upload_reward',$4,$5)
+                            ON CONFLICT(reference) DO NOTHING""",
+                            user_id,
+                            upload_reward,
+                            new_points,
+                            reward_ref,
+                            f"Upload reward: {media_count} media = +{upload_reward} points",
+                        )
 
         # =================================================
         # DATABASE SUCCESS

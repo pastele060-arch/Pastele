@@ -8,7 +8,7 @@ from aiogram.types import (
 from database import get_pool
 from handlers.sendall import send_all
 from utils.user import get_user_status  # 🔥 TAMBAH INI
-from utils.share_unlock import get_share_status, ensure_share_progress, gate_message
+from utils.points import get_points, fmt_points
 from utils.user_lang import get_user_language
 
 router = Router()
@@ -108,7 +108,7 @@ async def open_all(call: CallbackQuery):
         paid_access = await pool.fetchval(
             """SELECT EXISTS(
                 SELECT 1 FROM file_purchases
-                WHERE user_id=$1 AND file_code=$2 AND status='paid'
+                WHERE user_id=$1 AND (LOWER(TRIM(COALESCE(file_code,''))) = LOWER(TRIM($2)) OR LOWER(TRIM(COALESCE(code,''))) = LOWER(TRIM($2))) AND status='paid'
             )""",
             call.from_user.id, code
         ) or False
@@ -120,27 +120,18 @@ async def open_all(call: CallbackQuery):
         ) or False
         privileged = bool(paid_access or creator_access)
 
-    current, target, completed = await get_share_status(
-        pool, code, call.from_user.id,
-        is_paid=bool(file.get("is_paid")),
-        media_count=media_count,
-    )
-    if not privileged and not completed:
-        await ensure_share_progress(
-            pool, code, call.from_user.id,
-            is_paid=bool(file.get("is_paid")),
-            media_count=media_count,
-        )
-        text, kb = await gate_message(
-            call.bot, call.message.chat.id,
-            code=code,
-            title=str(file.get("title") or code),
-            progress=current,
-            target=target,
-            is_paid=bool(file.get("is_paid")),
-        )
-        await call.message.answer(text, parse_mode="HTML", reply_markup=kb)
-        return
+    # Point gate: FREE requires media_count points before opening; paid access
+    # is charged once at first Open Menu by getfile, with a safe fallback here.
+    if not privileged:
+        points = await get_points(pool, call.from_user.id)
+        if not bool(file.get("is_paid")) and points < media_count:
+            lang = await get_user_language(call.from_user.id)
+            text = {
+                "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nButuh minimal <b>{media_count} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.",
+                "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nAt least <b>{media_count} points</b> are required.\nYour points: <b>{fmt_points(points)}</b>.",
+                "zh": f"⭐ <b>积分不足</b>\n\n至少需要 <b>{media_count} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。",
+            }
+            return await call.message.answer(text.get(lang,text["id"]),parse_mode="HTML")
 
     # Kirim semua media
     await send_all(

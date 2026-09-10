@@ -5,8 +5,9 @@ import asyncio, json, logging
 from aiogram import Router, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.exceptions import TelegramRetryAfter
-from utils.media_sender import safe_copy_from_storage
+from utils.media_sender import safe_copy_from_storage, safe_copy_from_source
 from utils.share_unlock import telegram_setting
+from utils.points import get_points, charge_points, MEDIA_COST, fmt_points
 from utils.user_lang import get_user_language
 from utils.language import media_watermark
 
@@ -53,6 +54,21 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
     send_interval = await telegram_setting("telegram_user_send_delay", SEND_INTERVAL)
     batch_end = min(offset + BATCH_SIZE, total)
     batch = media[offset:batch_end]
+
+    # FREE files consume 1.20 points per media. Charge the batch atomically
+    # before sending to avoid races when users press Continue quickly.
+    privileged_user = int(file.get("owner_id") or 0) == int(chat_id) or user_level in ("vip", "vvip")
+    if not bool(file.get("is_paid")) and not privileged_user:
+        charge_count = len([x for x in batch if isinstance(x, dict) and x.get("file_id")])
+        if charge_count:
+            try:
+                await charge_points(await _get_pool(), chat_id, MEDIA_COST*charge_count, "media_open", f"all:{chat_id}:{code}:{offset}", f"Open all batch {offset}-{batch_end} of {code}")
+            except Exception:
+                points=await get_points(await _get_pool(),chat_id)
+                lang=await get_user_language(chat_id)
+                text={"id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nBatch ini membutuhkan <b>{fmt_points(MEDIA_COST*charge_count)} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.","en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis batch needs <b>{fmt_points(MEDIA_COST*charge_count)} points</b>.\nYour points: <b>{fmt_points(points)}</b>.","zh":f"⭐ <b>积分不足</b>\n\n此批次需要 <b>{fmt_points(MEDIA_COST*charge_count)} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。"}
+                await bot.send_message(chat_id,text.get(lang,text["id"]),parse_mode="HTML")
+                return False
     me = await bot.get_me()
     bot_name = f"@{me.username}" if me.username else "@bot"
     lang = await get_user_language(chat_id)
@@ -95,9 +111,21 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
                 await bot.send_chat_action(chat_id=chat_id, action="typing")
             except Exception:
                 pass
-            result = await safe_copy_from_storage(
-                bot, chat_id, message_id, protect_content=protect,
-                delay=0.0, caption=media_caption)
+            source_chat_id = item.get("source_chat_id")
+            if source_chat_id:
+                result = await safe_copy_from_source(
+                    bot, chat_id, source_chat_id, message_id,
+                    protect_content=protect, delay=0.0, caption=media_caption)
+            else:
+                source_chat_id = item.get("source_chat_id")
+                if source_chat_id:
+                    result = await safe_copy_from_source(
+                        bot, chat_id, source_chat_id, message_id,
+                        protect_content=protect, delay=0.0, caption=media_caption)
+                else:
+                    result = await safe_copy_from_storage(
+                        bot, chat_id, message_id, protect_content=protect,
+                        delay=0.0, caption=media_caption)
             if result is not None:
                 success += 1
             else:
@@ -117,6 +145,14 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
 
         if pos < batch_end:
             await asyncio.sleep(max(float(send_interval), 2.0))
+
+    # Refund failed/invalid media so only successfully opened media costs points.
+    if not bool(file.get("is_paid")) and not privileged_user and failed:
+        try:
+            from utils.points import add_points
+            await add_points(await _get_pool(), chat_id, MEDIA_COST * failed, "media_refund", f"refund:{chat_id}:{code}:{offset}", f"Refund {failed} failed media from {code}")
+        except Exception:
+            logger.exception("POINT REFUND ERROR | user=%s code=%s offset=%s",chat_id,code,offset)
 
     remaining = total - batch_end
     if remaining > 0:
@@ -142,6 +178,10 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
                                reply_markup=final_keyboard(code, lang))
     return success > 0
 
+async def _get_pool():
+    from database import get_pool
+    return await get_pool()
+
 async def _load_file(code):
     from database import get_pool
     pool = await get_pool()
@@ -160,6 +200,10 @@ async def _can_open(pool, file, user_id):
         user_id, file["code"])
     creator = await pool.fetchval("""SELECT COALESCE(is_creator,FALSE)
         AND COALESCE(creator_status,'none')='approved' FROM users WHERE user_id=$1""", user_id)
+    if not file.get("is_paid"):
+        pts = await get_points(pool,user_id)
+        media_count = int(file.get("media_count") or len(file.get("media") or []))
+        return bool(pts >= media_count * 0 + MEDIA_COST), level
     return bool(paid or creator), level
 
 router = Router()

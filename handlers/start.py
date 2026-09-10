@@ -151,49 +151,24 @@ async def process_start(
 
     # =====================================================
     # CODE SHARE DEEP-LINK
-    # s_<code>_<sharer_id>
-    # Award one point only for a genuinely new bot member.
-    # This is done before language/force-sub screens so the event
-    # cannot be lost during the onboarding flow.
+    # Format: s_<owner_id>_<code>. Sharing itself never awards points.
+    # The +1 is recorded only when the shared code is actually opened.
     # =====================================================
-    if is_new_user and start_arg.startswith("s_"):
+    pending_share_owner = None
+    pending_share_code = None
+    if start_arg.startswith("s_"):
         try:
-            payload_parts = start_arg.split("_", 2)
-            if len(payload_parts) == 3:
-                shared_code = payload_parts[1].strip().lower()
-                sharer_id = int(payload_parts[2])
-                shared_file = await pool.fetchrow(
-                    """
-                    SELECT code, owner_id, media_count, is_paid
-                    FROM files
-                    WHERE LOWER(TRIM(code))=LOWER(TRIM($1))
-                    LIMIT 1
-                    """,
-                    shared_code,
-                )
-                if shared_file and int(shared_file["owner_id"] or 0) == sharer_id:
-                    awarded = await record_new_member_open(
-                        pool,
-                        shared_file["code"],
-                        sharer_id,
-                        user_id,
-                        media_count=int(shared_file["media_count"] or 0),
-                        is_paid=bool(shared_file["is_paid"]),
-                    )
-                    if awarded:
-                        logging.info(
-                            "CODE SHARE PROGRESS +1 | code=%s | owner=%s | new_member=%s",
-                            shared_file["code"], sharer_id, user_id,
-                        )
-                    # Continue onboarding and then open the shared code.
-                    start_arg = shared_file["code"]
-                    if state is not None:
-                        await state.update_data(start_payload=start_arg)
+            parts = start_arg.split("_", 2)
+            if len(parts)==3 and parts[1].isdigit():
+                pending_share_owner=int(parts[1]); pending_share_code=parts[2].strip()
+                shared_file=await pool.fetchrow("SELECT code,owner_id FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",pending_share_code)
+                if shared_file and int(shared_file["owner_id"] or 0)==pending_share_owner:
+                    start_arg=shared_file["code"]
+                    if state is not None: await state.update_data(start_payload=start_arg)
+                else:
+                    pending_share_owner=None; pending_share_code=None
         except Exception:
-            logging.exception(
-                "CODE SHARE DEEP LINK ERROR | user=%s | payload=%s",
-                user_id, start_arg,
-            )
+            logging.exception("SHARE DEEPLINK PARSE ERROR | user=%s | payload=%s",user_id,start_arg)
 
     # Language is selected once; /start reuses the saved language.
     # The selector is shown only when no language has been saved (or when explicitly forced).
@@ -414,6 +389,12 @@ async def process_start(
             pass
 
         # Import setelah diperlukan
+        if pending_share_owner and pending_share_code:
+            try:
+                from utils.share_unlock import record_new_member_open
+                await record_new_member_open(pool,pending_share_code,pending_share_owner,user_id)
+            except Exception:
+                logging.exception("SHARE POINT AWARD ERROR | owner=%s code=%s opener=%s",pending_share_owner,pending_share_code,user_id)
         from handlers.getfile import process_code
 
         return await process_code(
@@ -431,6 +412,7 @@ async def process_start(
             username,
             fullname,
             balance,
+            points,
             total_referral,
             is_creator,
             creator_status
@@ -505,6 +487,7 @@ async def render_home_fast(
         """
         SELECT
             balance,
+            points,
             total_referral,
             is_creator,
             creator_status,
@@ -523,6 +506,8 @@ async def render_home_fast(
             user["balance"] or 0
         )
 
+        points = user["points"] or 0
+
         referral = (
             user["total_referral"] or 0
         )
@@ -534,6 +519,7 @@ async def render_home_fast(
     else:
 
         balance = 0
+        points = 0
         referral = 0
         is_creator = False
 
@@ -573,6 +559,7 @@ async def render_home_fast(
             f"ID: <code>{user_id}</code>\n"
             f"🎨 Creator: <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
             f"Balance: {balance_text}\n"
+            f"⭐ Points: <b>{points}</b>\n"
             f"Referrals: <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 Referral Link:\n"

@@ -554,8 +554,10 @@ async def open_file_by_code(
                 SELECT 1
                 FROM file_purchases
                 WHERE user_id = $1
-                  AND LOWER(TRIM(file_code))
-                      = LOWER(TRIM($2))
+                  AND (
+                      LOWER(TRIM(COALESCE(file_code, ''))) = LOWER(TRIM($2))
+                      OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2))
+                  )
                   AND status = 'paid'
             )
             """,
@@ -651,38 +653,42 @@ async def open_file_by_code(
     await state.clear()
 
     # ========================================================
-    # PAID BUT NO ACCESS
+    # POINT ECONOMY GATE
     # ========================================================
-
-    if is_paid and not has_access:
-
-        keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=(
-                            f"💳 BAYAR Rp "
-                            f"{price:,.0f}"
-                        ).replace(",", "."),
-                        callback_data=f"pay:{code}",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        text="🏠 Home",
-                        callback_data="home",
-                    )
-                ],
-            ]
-        )
-
-        lang = await get_user_language(message.from_user.id)
-        paid_text = {
-            "id": (f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Harga: Rp {price:,}\n\nSilakan lakukan pembayaran untuk membuka file."),
-            "en": (f"🔒 <b>PAID FILE</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Price: Rp {price:,}\n\nComplete the payment to open this file."),
-            "zh": (f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{code}</code>\n💰 价格：Rp {price:,}\n\n请完成付款后打开文件。"),
-        }
-        return await message.answer(paid_text.get(lang, paid_text["id"]).replace(",", "."), parse_mode="HTML", reply_markup=keyboard)
+    # FREE: user must have at least media_count points to enter the code.
+    # Paid: money purchase grants access, but the code price is also charged
+    # once in points before the Open Menu is shown.
+    if not owner and not bool(creator_access) and user_level not in ("vip", "vvip"):
+        from utils.points import get_points, unlock_paid_code, fmt_points
+        points = await get_points(pool, message.from_user.id)
+        if is_paid:
+            if not has_access:
+                pass  # handled by the paid-file screen below
+            else:
+                already = await pool.fetchval("SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(code)=LOWER($2) LIMIT 1", message.from_user.id, file["code"])
+                if not already:
+                    ok, points = await unlock_paid_code(pool, message.from_user.id, file["code"], int(price))
+                    if not ok:
+                        lang = await get_user_language(message.from_user.id)
+                        need = fmt_points(price)
+                        txt = {
+                            "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini membutuhkan <b>{need} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.\n\nSilakan kumpulkan atau beli poin terlebih dahulu.",
+                            "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code requires <b>{need} points</b>.\nYour points: <b>{fmt_points(points)}</b>.\n\nEarn or buy points first.",
+                            "zh": f"⭐ <b>积分不足</b>\n\n此代码需要 <b>{need} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。\n\n请先赚取或购买积分。",
+                        }
+                        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐ Cek Poin" if lang=="id" else "⭐ Points" if lang=="en" else "⭐ 积分",callback_data="points")]])
+                        return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
+        else:
+            required = max(0, int(len(media)))
+            if points < required:
+                lang = await get_user_language(message.from_user.id)
+                txt={
+                    "id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini berisi <b>{required} media</b> dan membutuhkan minimal <b>{required} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.\n\nKumpulkan poin lewat Cek In, upload media, atau Buy Poin.",
+                    "en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code contains <b>{required} media</b> and requires at least <b>{required} points</b>.\nYour points: <b>{fmt_points(points)}</b>.\n\nEarn points by check-in, uploading media, or buying points.",
+                    "zh":f"⭐ <b>积分不足</b>\n\n此代码包含 <b>{required} 个媒体</b>，至少需要 <b>{required} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。\n\n可通过签到、上传媒体或购买积分获得。",
+                }
+                kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐ Cek Poin" if lang=="id" else "⭐ Points" if lang=="en" else "⭐ 积分",callback_data="points")]])
+                return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
 
     # ========================================================
     # OPEN FILE

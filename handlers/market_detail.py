@@ -343,28 +343,14 @@ async def free_open(call: CallbackQuery):
     # ========================================================
     if completed or progress >= target:
         await call.answer()
+        from handlers.open_menu import open_keyboard
+        lang = await get_user_language(call.from_user.id)
         return await call.message.edit_text(
             "🎉 <b>CODE GRATIS TERBUKA</b>\n\n"
             f"🔑 <code>{code}</code>\n\n"
-            "Sekarang kamu bisa membuka code ini "
-            "tanpa pembayaran.",
+            "File gratis sudah terbuka. Pilih metode pengiriman.",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[
-                    [
-                        InlineKeyboardButton(
-                            text="📂 Buka Code",
-                            callback_data=f"page:{code}:1"
-                        )
-                    ],
-                    [
-                        InlineKeyboardButton(
-                            text="⬅️ Marketplace",
-                            callback_data="marketplace"
-                        )
-                    ]
-                ]
-            )
+            reply_markup=open_keyboard(code, lang),
         )
     # --------------------------------------------------------
     # SHARE
@@ -445,16 +431,15 @@ async def free_share(call: CallbackQuery):
     )
 
     if completed or progress >= target:
+        from handlers.open_menu import open_keyboard
+        lang = await get_user_language(call.from_user.id)
         return await call.message.edit_text(
             "🎉 <b>CODE TERBUKA</b>\n\n"
             f"🔑 <code>{code}</code>\n"
-            f"📈 Progress: <b>{target}/{target}</b>",
+            f"📈 Progress: <b>{target}/{target}</b>\n\n"
+            "File sudah terbuka. Pilih metode pengiriman.",
             parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📂 Buka Code", callback_data=f"page:{code}:1")],
-                [InlineKeyboardButton(text="📤 Open All", callback_data=f"all:{code}")],
-                [InlineKeyboardButton(text="⬅️ Marketplace", callback_data="marketplace")],
-            ]),
+            reply_markup=open_keyboard(code, lang),
         )
 
     me = await call.bot.get_me()
