@@ -997,3 +997,18 @@ async def cancel_getfile(
             logger.exception(
                 "CANCEL GETFILE EDIT ERROR"
             )
+
+
+async def canonical_open_menu(message, code: str, lang: str = "id"):
+    """Single post-access destination for every successful Code lookup."""
+    await message.answer(
+        "📂 <b>OPEN MENU</b>\n\nPilih cara membuka media:"
+        if lang == "id"
+        else (
+            "📂 <b>OPEN MENU</b>\n\nChoose how to open the media."
+            if lang == "en"
+            else "📂 <b>打开菜单</b>\n\n请选择打开媒体的方式。"
+        ),
+        parse_mode="HTML",
+        reply_markup=open_keyboard(code, lang),
+    )
