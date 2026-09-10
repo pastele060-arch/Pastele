@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS medias (
     id BIGSERIAL PRIMARY KEY,
     code TEXT NOT NULL,
     message_id BIGINT,
+    source_chat_id BIGINT,
     file_id TEXT,
     file_type TEXT,
     file_size BIGINT DEFAULT 0,
@@ -230,6 +231,7 @@ CREATE TABLE IF NOT EXISTS medias (
 );
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS code TEXT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS message_id BIGINT;
+ALTER TABLE medias ADD COLUMN IF NOT EXISTS source_chat_id BIGINT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS file_id TEXT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS file_type TEXT;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS file_size BIGINT DEFAULT 0;
@@ -238,6 +240,7 @@ ALTER TABLE medias ADD COLUMN IF NOT EXISTS position INT DEFAULT 0;
 ALTER TABLE medias ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 CREATE INDEX IF NOT EXISTS idx_medias_code ON medias(code);
 CREATE INDEX IF NOT EXISTS idx_medias_message ON medias(message_id);
+CREATE INDEX IF NOT EXISTS idx_medias_source_chat ON medias(source_chat_id);
 
 -- -------------------------
 -- PURCHASES / PAYMENTS
@@ -732,5 +735,112 @@ CREATE INDEX IF NOT EXISTS idx_files_search_text ON files USING gin(to_tsvector(
 UPDATE files
 SET search_text = concat_ws(' ',coalesce(code,''),coalesce(title,''),coalesce(creator,''))
 WHERE search_text IS NULL OR search_text='';
+
+
+-- ============================================================
+-- POINT ECONOMY (REAL / ATOMIC)
+-- 1 point = Rp1.00 for purchases. Media delivery costs 1.20 points.
+-- Upload costs 1 point/media for FREE users and returns 20% as reward.
+-- ============================================================
+ALTER TABLE users ADD COLUMN IF NOT EXISTS points NUMERIC(18,2) NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_streak INT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_checkin_date DATE;
+UPDATE users SET points=0 WHERE points IS NULL;
+ALTER TABLE users ALTER COLUMN points SET DEFAULT 0;
+ALTER TABLE users ALTER COLUMN points SET NOT NULL;
+
+CREATE TABLE IF NOT EXISTS point_transactions (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    amount NUMERIC(18,2) NOT NULL,
+    balance_after NUMERIC(18,2) NOT NULL,
+    type TEXT NOT NULL,
+    reference TEXT NOT NULL UNIQUE,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_point_transactions_user ON point_transactions(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS point_checkins (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    checkin_date DATE NOT NULL,
+    day_number INT NOT NULL,
+    points NUMERIC(18,2) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, checkin_date)
+);
+
+CREATE TABLE IF NOT EXISTS point_code_unlocks (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    code TEXT NOT NULL,
+    amount NUMERIC(18,2) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_point_code_unlocks_code ON point_code_unlocks(code);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_point_code_unlocks_user_code_lower ON point_code_unlocks(user_id, LOWER(code));
+
+CREATE TABLE IF NOT EXISTS point_orders (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    points NUMERIC(18,2) NOT NULL,
+    amount BIGINT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'cashi',
+    order_id TEXT UNIQUE NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    qr_url TEXT,
+    expires_at TIMESTAMPTZ,
+    paid_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_point_orders_user_status ON point_orders(user_id,status);
+CREATE INDEX IF NOT EXISTS idx_point_orders_order ON point_orders(order_id);
+
+-- ============================================================
+-- UPLOAD REWARD ECONOMY
+-- ============================================================
+-- Uploading does NOT consume points.
+-- Reward is granted only for completed blocks of 50 media:
+--   1-49  media = 0 points
+--   50-99 media = +10 points
+--   100 media = +20 points
+-- The application records the reward in point_transactions using
+-- a unique reference so retries cannot duplicate the reward.
+-- ============================================================
+
+-- Atomic point credit/debit helpers. Amount may be positive or negative.
+CREATE OR REPLACE FUNCTION public.add_points(
+    p_user_id BIGINT, p_amount NUMERIC, p_type TEXT, p_reference TEXT, p_description TEXT DEFAULT NULL
+) RETURNS NUMERIC AS $$
+DECLARE v_balance NUMERIC(18,2);
+    v_existing NUMERIC(18,2);
+BEGIN
+    SELECT balance_after INTO v_existing FROM point_transactions WHERE reference=p_reference LIMIT 1;
+    IF FOUND THEN RETURN v_existing; END IF;
+    IF p_amount = 0 THEN
+        SELECT points INTO v_balance FROM users WHERE user_id=p_user_id FOR UPDATE;
+        IF v_balance IS NULL THEN RAISE EXCEPTION 'user_not_found'; END IF;
+        RETURN v_balance;
+    END IF;
+    PERFORM 1 FROM users WHERE user_id=p_user_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'user_not_found'; END IF;
+    IF p_amount < 0 THEN
+        UPDATE users SET points=points+p_amount, updated_at=NOW()
+        WHERE user_id=p_user_id AND points+p_amount >= 0
+        RETURNING points INTO v_balance;
+        IF NOT FOUND THEN RAISE EXCEPTION 'insufficient_points'; END IF;
+    ELSE
+        UPDATE users SET points=points+p_amount, updated_at=NOW()
+        WHERE user_id=p_user_id RETURNING points INTO v_balance;
+    END IF;
+    INSERT INTO point_transactions(user_id,amount,balance_after,type,reference,description)
+    VALUES(p_user_id,p_amount,v_balance,p_type,p_reference,p_description)
+    ON CONFLICT(reference) DO NOTHING;
+    RETURN v_balance;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
 COMMIT;

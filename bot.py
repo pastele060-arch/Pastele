@@ -92,6 +92,7 @@ from handlers.new_code import router as new_code_router
 from handlers.category_code import router as category_router
 # ACCOUNT
 from handlers.account import router as account_router
+from handlers.points import router as points_router
 from handlers.vip import router as vip_router
 from handlers.my_code import router as my_code_router
 from handlers.help import router as help_router
@@ -164,6 +165,7 @@ dp.include_router(new_code_router)
 # ACCOUNT
 # ------------------------------------------------------------
 dp.include_router(account_router)
+dp.include_router(points_router)
 # Account -> 💎 VIP -> callback_data="vvip"
 dp.include_router(vip_router)
 dp.include_router(my_code_router)
