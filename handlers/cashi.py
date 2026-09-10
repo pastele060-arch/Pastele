@@ -171,9 +171,7 @@ async def cancel_cashi_database(
 # ============================================================
 # CREATE CASHI PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("cashi:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def create_cashi(
     call: CallbackQuery,
 ):
@@ -786,9 +784,7 @@ async def create_cashi(
 # ============================================================
 # CHECK CASHI PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("cashicheck:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def check_cashi(
     call: CallbackQuery,
 ):

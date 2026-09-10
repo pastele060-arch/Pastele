@@ -1,5 +1,6 @@
 import asyncio
 import json
+import asyncio
 import logging
 import re
 import time
@@ -775,6 +776,32 @@ async def process_code(
         code=code,
         state=DummyState(),
     )
+
+
+# ============================================================
+# GLOBAL CODE ENTRY
+# ============================================================
+# A CODE can arrive from anywhere in the chat, not only after pressing
+# Get File. It always enters the same process_code() pipeline.
+@router.message(F.text.regexp(CODE_REGEX))
+async def receive_code_global(
+    message: Message,
+    state: FSMContext,
+):
+    user_id = int(message.from_user.id)
+    code_match = CODE_REGEX.search(message.text or "")
+    if not code_match:
+        return
+    code = normalize_code(code_match.group())
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    try:
+        await state.clear()
+    except Exception:
+        pass
+    return await process_code(message, code)
 
 
 # ============================================================

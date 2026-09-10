@@ -121,7 +121,7 @@ async def create_bayargg(call:CallbackQuery, code:str, file):
         logger.exception("BAYARGG QR SEND ERROR")
         return await call.message.answer("⚠️ Pembayaran dibuat, tetapi QR gagal ditampilkan. Gunakan cek pembayaran.")
 
-@router.callback_query(F.data.startswith("bayargg:"))
+# INTERNAL: routed centrally by handlers.pay
 async def bayargg_entry(call:CallbackQuery):
     await call.answer("⏳ Membuat QR BayarGG...")
     code=call.data.split(":",1)[1].strip()
@@ -129,7 +129,7 @@ async def bayargg_entry(call:CallbackQuery):
     if not file: return await call.message.answer("❌ File tidak ditemukan.")
     return await create_bayargg(call,code,file)
 
-@router.callback_query(F.data.startswith("bayarggcheck:"))
+# INTERNAL: routed centrally by handlers.pay
 async def bayargg_check(call:CallbackQuery):
     await call.answer("⏳ Mengecek BayarGG...")
     pid=int(call.data.split(":",1)[1])

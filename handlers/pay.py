@@ -930,6 +930,117 @@ async def paycreator_method_bridge(call: CallbackQuery):
         logger.exception("PAY CREATOR METHOD ERROR")
         return await call.message.answer("❌ Gagal memproses metode pembayaran Creator.")
 
+
+# ============================================================
+# CENTRAL PRODUCT PAYMENT ENTRY / CHECK
+# ============================================================
+# Semua pembayaran user masuk melalui pay.py. Provider/module handlers
+# hanya menyediakan implementasi provider dan helper; router entry tetap
+# berada di sini agar tidak ada jalur pembayaran kedua.
+
+@router.callback_query(F.data.startswith("buyvip:"))
+async def legacy_buyvip_entry(call: CallbackQuery):
+    # Legacy buttons are accepted but immediately enter the same central pay flow.
+    try:
+        from handlers.vip import buy_vip
+        call.data = call.data.replace("buyvip:", "buyvip:", 1)
+        return await buy_vip(call)
+    except Exception:
+        logger.exception("LEGACY VIP PAYMENT ENTRY ERROR")
+        return await call.message.answer("❌ Gagal membuka pembayaran VIP.")
+
+@router.callback_query(F.data.startswith("payvip:"))
+async def payvip_entry(call: CallbackQuery):
+    try:
+        from handlers.vip import buy_vip
+        call.data = call.data.replace("payvip:", "buyvip:", 1)
+        return await buy_vip(call)
+    except Exception:
+        logger.exception("CENTRAL VIP PAYMENT ENTRY ERROR")
+        return await call.message.answer("❌ Gagal membuka pembayaran VIP.")
+
+@router.callback_query(F.data == "creator_upgrade")
+async def legacy_creator_entry(call: CallbackQuery):
+    try:
+        from handlers.creator import creator_upgrade
+        return await creator_upgrade(call)
+    except Exception:
+        logger.exception("LEGACY CREATOR PAYMENT ENTRY ERROR")
+        return await call.message.answer("❌ Gagal membuka pembayaran Creator.")
+
+@router.callback_query(F.data == "paycreator")
+async def paycreator_entry(call: CallbackQuery):
+    try:
+        from handlers.creator import creator_upgrade
+        call.data = "creator_upgrade"
+        return await creator_upgrade(call)
+    except Exception:
+        logger.exception("CENTRAL CREATOR PAYMENT ENTRY ERROR")
+        return await call.message.answer("❌ Gagal membuka pembayaran Creator.")
+
+@router.callback_query(F.data.startswith("cashicheck:"))
+async def central_cashi_check(call: CallbackQuery):
+    try:
+        from handlers.cashi import check_cashi
+        return await check_cashi(call)
+    except Exception:
+        logger.exception("CENTRAL CASHI CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran Cashi.")
+
+@router.callback_query(F.data.startswith("bayarggcheck:"))
+async def central_bayargg_check(call: CallbackQuery):
+    try:
+        from handlers.bayargg_payment import bayargg_check
+        return await bayargg_check(call)
+    except Exception:
+        logger.exception("CENTRAL BAYARGG CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran BayarGG.")
+
+@router.callback_query(F.data.startswith("points_check:"))
+async def central_points_check(call: CallbackQuery):
+    try:
+        from handlers.points import points_check
+        return await points_check(call)
+    except Exception:
+        logger.exception("CENTRAL POINT PAYMENT CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran poin.")
+
+@router.callback_query(F.data.startswith("vipcashicheck:"))
+async def central_vip_cashi_check(call: CallbackQuery):
+    try:
+        from handlers.vip import vip_cashi_check
+        return await vip_cashi_check(call)
+    except Exception:
+        logger.exception("CENTRAL VIP CASHI CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran VIP.")
+
+@router.callback_query(F.data.startswith("vipwait:"))
+async def central_vip_auto_check(call: CallbackQuery):
+    try:
+        from handlers.vip import vip_wait
+        return await vip_wait(call)
+    except Exception:
+        logger.exception("CENTRAL VIP AUTO CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran VIP.")
+
+@router.callback_query(F.data.startswith("vipmanualcheck:"))
+async def central_vip_manual_check(call: CallbackQuery):
+    try:
+        from handlers.vip import vip_manual_check
+        return await vip_manual_check(call)
+    except Exception:
+        logger.exception("CENTRAL VIP MANUAL CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran manual VIP.")
+
+@router.callback_query(F.data.startswith("creatorpaycheck:"))
+async def central_creator_check(call: CallbackQuery):
+    try:
+        from handlers.creator import creator_payment_check
+        return await creator_payment_check(call)
+    except Exception:
+        logger.exception("CENTRAL CREATOR PAYMENT CHECK ERROR")
+        return await call.message.answer("❌ Gagal mengecek pembayaran Creator.")
+
 # ============================================================
 # PAYMENT ENTRY
 # ============================================================
@@ -3131,13 +3242,13 @@ async def finish_payment(
         # SUCCESS MESSAGE
         # ----------------------------------------------------
         try:
-            await message.answer(
-                (
-                    "⏳ <b>Pembayaran berhasil terdeteksi.</b>\n\n"
-                    "Sedang memproses file..."
-                ),
-                parse_mode="HTML",
-            )
+            lang = await get_user_language(user_id)
+            success_notice = {
+                "id": "⏳ <b>Pembayaran berhasil terdeteksi.</b>\n\nSedang membuka file...",
+                "en": "⏳ <b>Payment confirmed.</b>\n\nOpening your file...",
+                "zh": "⏳ <b>支付已确认。</b>\n\n正在打开文件……",
+            }[lang]
+            await message.answer(success_notice, parse_mode="HTML")
         except Exception:
             pass
         return await complete_success_side_effects(

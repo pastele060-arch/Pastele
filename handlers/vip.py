@@ -448,7 +448,7 @@ async def _create_auto_vip(
     kb.button(
         text="📷 QR Manual",
         callback_data=(
-            f"vipmanual:{paket_id}"
+            f"payvipmethod:{paket_id}:manual"
         ),
     )
     kb.button(
@@ -501,9 +501,7 @@ async def _create_auto_vip(
 # ============================================================
 # BUY VIP
 # ============================================================
-@router.callback_query(
-    F.data.startswith("buyvip:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def buy_vip(
     call: CallbackQuery,
 ):
@@ -545,7 +543,7 @@ async def buy_vip(
         parse_mode="HTML",
         reply_markup=payment_selector_markup(f"payvipmethod:{paket_id}", lang, methods),
     )
-@router.callback_query(F.data.startswith("vipmethod:"))
+# INTERNAL: routed centrally by handlers.pay
 async def vip_method(call: CallbackQuery):
     await safe_callback_answer(call)
     parts = call.data.split(":")
@@ -591,7 +589,7 @@ async def _create_cashi_vip(call: CallbackQuery, paket_id: str, paket: dict):
     """, invoice, user_id, paket_id, invoice, paket["price"], invoice, payment.get("payment_url"), payment.get("expires_at"))
     qr = payment.get("qr_string") or payment.get("qr_image")
     text = f"💳 <b>VIP • CASHI</b>\n\n📦 {safe_html(paket['name'])}\n💰 <b>{rupiah(paket['price'])}</b>\n🧾 <code>{safe_html(invoice)}</code>\n\nScan QR lalu tekan cek pembayaran."
-    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Cek Pembayaran",callback_data=f"vipcashicheck:{invoice}")],[InlineKeyboardButton(text="❌ Batal",callback_data=f"vipmethod:{paket_id}:cancel")]])
+    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔄 Cek Pembayaran",callback_data=f"vipcashicheck:{invoice}")],[InlineKeyboardButton(text="❌ Batal",callback_data=f"payvipmethod:{paket_id}:cancel")]])
     if qr:
         try:
             raw = qr
@@ -607,7 +605,7 @@ async def _create_cashi_vip(call: CallbackQuery, paket_id: str, paket: dict):
             logger.exception("VIP CASHI QR ERROR")
     await call.message.answer(text,parse_mode="HTML",reply_markup=kb)
 
-@router.callback_query(F.data.startswith("vipcashicheck:"))
+# INTERNAL: routed centrally by handlers.pay
 async def vip_cashi_check(call: CallbackQuery):
     await safe_callback_answer(call)
     invoice=call.data.split(":",1)[1].strip()
@@ -623,8 +621,28 @@ async def vip_cashi_check(call: CallbackQuery):
         return await call.message.answer("✅ Pembayaran sudah diproses.")
     paket=VIP_PACKAGES.get(str(tx["code"]))
     days=int((paket or {}).get("days",1))
-    await pool.execute("UPDATE users SET vip=TRUE, vip_until=CASE WHEN vip_until IS NULL OR vip_until<NOW() THEN NOW()+($2||' days')::interval ELSE vip_until+($2||' days')::interval END WHERE user_id=$1",call.from_user.id,days)
-    await call.message.answer(f"🎉 <b>VIP aktif!</b>\n\nDurasi: <b>{days} hari</b>",parse_mode="HTML")
+    plan_name=str((paket or {}).get("type") or "vip").lower()
+    is_vvip=plan_name in {"vvip","premium_vvip"} or "vvip" in str((paket or {}).get("name") or "").lower()
+    await pool.execute(
+        """UPDATE users SET
+            vip=TRUE, is_vip=TRUE,
+            vvip=CASE WHEN $3 THEN TRUE ELSE vvip END,
+            is_vvip=CASE WHEN $3 THEN TRUE ELSE is_vvip END,
+            plan=CASE WHEN $3 THEN 'vvip' ELSE 'vip' END,
+            vip_until=CASE WHEN vip_until IS NULL OR vip_until<NOW()
+                THEN NOW()+($2||' days')::interval
+                ELSE vip_until+($2||' days')::interval END,
+            updated_at=NOW()
+           WHERE user_id=$1""",
+        call.from_user.id, days, is_vvip
+    )
+    lang=await get_user_language(call.from_user.id)
+    msg={
+        "id":f"🎉 <b>Pembayaran berhasil!</b>\n\n💎 Status akun: <b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 Durasi: <b>{days} hari</b>",
+        "en":f"🎉 <b>Payment successful!</b>\n\n💎 Account status: <b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 Duration: <b>{days} days</b>",
+        "zh":f"🎉 <b>支付成功！</b>\n\n💎 账户状态：<b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 有效期：<b>{days} 天</b>",
+    }[lang]
+    await call.message.answer(msg,parse_mode="HTML")
 
 # ============================================================
 # EXTEND VIP
@@ -684,7 +702,7 @@ async def _manual_fallback(
                 InlineKeyboardButton(
                     text="📷 QR Manual",
                     callback_data=(
-                        f"vipmanual:{paket_id}"
+                        f"payvipmethod:{paket_id}:manual"
                     ),
                 )
             ],
@@ -914,9 +932,7 @@ async def vip_manual(
 # ============================================================
 # USER CONFIRMS MANUAL PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("vipmanualcheck:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def vip_manual_check(
     call: CallbackQuery,
 ):
@@ -1221,19 +1237,29 @@ async def vip_approve(
         )
         return
     try:
-        await call.bot.send_message(
-            tx["user_id"],
-            (
-                f"🎉 <b>{safe_html(tier)} "
-                "SUDAH AKTIF!</b>\n\n"
-                f"📦 Paket: "
-                f"<b>{safe_html(paket['name'])}</b>\n"
-                f"⏳ Aktif sampai: "
-                f"<b>{expiry:%d-%m-%Y %H:%M}</b>\n\n"
-                "Terima kasih. Selamat "
-                "menikmati akses premium!"
+        user_lang = await get_user_language(tx["user_id"])
+        notify = {
+            "id": (
+                f"🎉 <b>{safe_html(tier)} SUDAH AKTIF!</b>\n\n"
+                f"📦 Paket: <b>{safe_html(paket['name'])}</b>\n"
+                f"⏳ Aktif sampai: <b>{expiry:%d-%m-%Y %H:%M}</b>\n\n"
+                "Terima kasih. Selamat menikmati akses premium!"
             ),
-            parse_mode="HTML",
+            "en": (
+                f"🎉 <b>{safe_html(tier)} IS ACTIVE!</b>\n\n"
+                f"📦 Package: <b>{safe_html(paket['name'])}</b>\n"
+                f"⏳ Active until: <b>{expiry:%d-%m-%Y %H:%M}</b>\n\n"
+                "Thank you. Enjoy your premium access!"
+            ),
+            "zh": (
+                f"🎉 <b>{safe_html(tier)} 已激活！</b>\n\n"
+                f"📦 套餐：<b>{safe_html(paket['name'])}</b>\n"
+                f"⏳ 有效期至：<b>{expiry:%d-%m-%Y %H:%M}</b>\n\n"
+                "感谢使用，祝你享受高级功能！"
+            ),
+        }[user_lang]
+        await call.bot.send_message(
+            tx["user_id"], notify, parse_mode="HTML"
         )
     except Exception:
         logger.exception(
@@ -1463,79 +1489,65 @@ async def vip_failed_reason(
 # ============================================================
 # CHECK AUTO PAYMENT
 # ============================================================
-@router.callback_query(
-    F.data.startswith("vipwait:")
-)
+# INTERNAL: routed centrally by handlers.pay
 async def vip_wait(
     call: CallbackQuery,
 ):
     await safe_callback_answer(call)
     if not call.message:
         return
-    parts = call.data.split(
-        ":",
-        1,
-    )
-    if len(parts) != 2:
-        return
-    invoice = parts[1].strip()
+    invoice = call.data.split(":", 1)[1].strip()
     if not invoice:
-        await call.message.answer(
-            "❌ Invoice tidak valid."
-        )
-        return
+        return await call.message.answer("❌ Invoice tidak valid.")
     pool = await get_pool()
-    try:
-        tx = await pool.fetchrow(
-            """
-            SELECT
-                status,
-                expires_at
-            FROM payments
-            WHERE invoice_id = $1
-            LIMIT 1
-            """,
-            invoice,
-        )
-    except Exception:
-        logger.exception(
-            "VIP WAIT DB ERROR"
-        )
-        await call.message.answer(
-            "❌ Gagal memeriksa "
-            "status pembayaran."
-        )
-        return
-    if not tx:
-        await call.message.answer(
-            "❌ Invoice tidak ditemukan."
-        )
-        return
-    status = str(
-        tx["status"] or ""
-    ).lower()
-    if status == "paid":
-        await call.message.answer(
-            "✅ Pembayaran berhasil.\n\n"
-            "VIP sedang/sudah aktif."
-        )
-        return
-    if status in (
-        "failed",
-        "expired",
-        "cancelled",
-    ):
-        await call.message.answer(
-            "❌ Pembayaran gagal atau "
-            "kedaluwarsa.\n\n"
-            "Silakan gunakan QR Manual."
-        )
-        return
-    await call.message.answer(
-        "⏳ Pembayaran belum diterima.\n\n"
-        "QR otomatis sedang tidak digunakan "
-        "untuk pembelian baru.\n"
-        "Gunakan <b>📷 QR Manual</b> "
-        "untuk melanjutkan.",
-        parse_mode="HTML",
+    tx = await pool.fetchrow(
+        "SELECT * FROM payments WHERE invoice_id=$1 AND user_id=$2 AND type='vip' LIMIT 1",
+        invoice, call.from_user.id,
     )
+    if not tx:
+        return await call.message.answer("❌ Invoice tidak ditemukan.")
+
+    status = str(tx.get("status") or "").lower()
+    if status != "paid":
+        provider = str(tx.get("provider") or "bayargg").lower()
+        try:
+            result = await (Cashi.check_payment(invoice) if provider == "cashi" else BayarGG.check_payment(invoice))
+            remote = str((result or {}).get("status") or "").lower()
+            if remote in {"paid","success","settled","completed","completed_payment","success_payment","settlement"}:
+                await pool.execute("UPDATE payments SET status='paid',paid_at=NOW() WHERE id=$1 AND status!='paid'",tx["id"])
+                status="paid"
+        except Exception:
+            logger.exception("VIP AUTO CHECK ERROR | provider=%s invoice=%s",provider,invoice)
+
+    if status != "paid":
+        lang=await get_user_language(call.from_user.id)
+        return await call.answer({
+            "id":"⏳ Pembayaran belum diterima.",
+            "en":"⏳ Payment has not been received yet.",
+            "zh":"⏳ 尚未收到付款。",
+        }[lang],show_alert=True)
+
+    paket=VIP_PACKAGES.get(str(tx["code"]),{})
+    days=int(paket.get("days",1))
+    ptype=str(paket.get("type") or "vip").lower()
+    is_vvip=ptype in {"vvip","premium_vvip"} or "vvip" in str(paket.get("name") or "").lower()
+    await pool.execute(
+        """UPDATE users SET
+            vip=TRUE,is_vip=TRUE,
+            vvip=CASE WHEN $3 THEN TRUE ELSE vvip END,
+            is_vvip=CASE WHEN $3 THEN TRUE ELSE is_vvip END,
+            plan=CASE WHEN $3 THEN 'vvip' ELSE 'vip' END,
+            vip_until=CASE WHEN vip_until IS NULL OR vip_until<NOW()
+                THEN NOW()+($2||' days')::interval
+                ELSE vip_until+($2||' days')::interval END,
+            updated_at=NOW()
+           WHERE user_id=$1""",
+        call.from_user.id,days,is_vvip
+    )
+    lang=await get_user_language(call.from_user.id)
+    msg={
+        "id":f"🎉 <b>Pembayaran berhasil!</b>\n\n💎 Status akun: <b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 Durasi: <b>{days} hari</b>",
+        "en":f"🎉 <b>Payment successful!</b>\n\n💎 Account status: <b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 Duration: <b>{days} days</b>",
+        "zh":f"🎉 <b>支付成功！</b>\n\n💎 账户状态：<b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 有效期：<b>{days} 天</b>",
+    }[lang]
+    return await call.message.answer(msg,parse_mode="HTML")

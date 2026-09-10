@@ -77,7 +77,7 @@ async def settle(order_id:str):
             await conn.execute("INSERT INTO point_transactions(user_id,amount,balance_after,type,reference,description) VALUES($1,$2,$3,'purchase',$4,$5) ON CONFLICT(reference) DO NOTHING",row['user_id'],row['points'],new,ref,f'Buy {row["points"]} points')
             return True
 
-@router.callback_query(F.data.startswith('points_check:'))
+# INTERNAL: routed centrally by handlers.pay
 async def points_check(call):
     await call.answer('⏳ Mengecek...'); order=call.data.split(':',1)[1]; pool=await get_pool(); row=await pool.fetchrow('SELECT * FROM point_orders WHERE order_id=$1 AND user_id=$2',order,call.from_user.id)
     if not row: return await call.message.answer('❌ Order tidak ditemukan.')

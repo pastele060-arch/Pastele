@@ -388,19 +388,96 @@ async def process_start(
         except Exception:
             pass
 
-        # Import setelah diperlukan
+        # Import setelah diperlukan.
+        # IMPORTANT: reward is granted only AFTER the code is actually
+        # opened through the canonical Get File flow.
+        from handlers.getfile import process_code
+        result = await process_code(message, code)
+
         if pending_share_owner and pending_share_code:
             try:
-                from utils.share_unlock import record_new_member_open
-                await record_new_member_open(pool,pending_share_code,pending_share_owner,user_id)
+                shared_file = await pool.fetchrow(
+                    "SELECT code, owner_id, is_paid FROM files "
+                    "WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",
+                    pending_share_code,
+                )
+                # A share-open reward is for a real free-code open. Paid
+                # codes are rewarded only through their normal purchase flow.
+                if (
+                    shared_file
+                    and not bool(shared_file["is_paid"])
+                    and int(shared_file["owner_id"] or 0) != user_id
+                ):
+                    media_count = await pool.fetchval(
+                        "SELECT COALESCE(media_count,0) FROM files WHERE code=$1",
+                        shared_file["code"],
+                    )
+                    opener_points = await pool.fetchval(
+                        "SELECT COALESCE(points,0) FROM users WHERE user_id=$1",
+                        user_id,
+                    )
+                    # Get File only opens a FREE code when the opener has
+                    # enough points for the entry gate. Reward only then.
+                    if float(opener_points or 0) >= int(media_count or 0):
+                        from utils.share_unlock import record_new_member_open
+                        awarded = await record_new_member_open(
+                            pool,
+                            shared_file["code"],
+                            pending_share_owner,
+                            user_id,
+                        )
+                    else:
+                        awarded = False
+                    if awarded:
+                        owner_points = await pool.fetchval(
+                            "SELECT points FROM users WHERE user_id=$1",
+                            pending_share_owner,
+                        )
+                        owner_lang = await pool.fetchval(
+                            "SELECT language FROM users WHERE user_id=$1",
+                            pending_share_owner,
+                        ) or "id"
+                        notify = {
+                            "id": (
+                                "🎉 <b>+1 POIN</b>\n\n"
+                                f"Code <code>{shared_file['code']}</code> "
+                                "berhasil dibuka oleh 1 pengguna unik.\n"
+                                f"⭐ Poin kamu sekarang: <b>{owner_points}</b>"
+                            ),
+                            "en": (
+                                "🎉 <b>+1 POINT</b>\n\n"
+                                f"Code <code>{shared_file['code']}</code> "
+                                "was opened by 1 unique user.\n"
+                                f"⭐ Your points: <b>{owner_points}</b>"
+                            ),
+                            "zh": (
+                                "🎉 <b>+1 积分</b>\n\n"
+                                f"代码 <code>{shared_file['code']}</code> "
+                                "已被 1 位独立用户打开。\n"
+                                f"⭐ 当前积分：<b>{owner_points}</b>"
+                            ),
+                        }.get(owner_lang, None)
+                        if notify:
+                            try:
+                                await bot.send_message(
+                                    pending_share_owner,
+                                    notify,
+                                    parse_mode="HTML",
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "SHARE OWNER NOTIFY ERROR | owner=%s",
+                                    pending_share_owner,
+                                )
             except Exception:
-                logging.exception("SHARE POINT AWARD ERROR | owner=%s code=%s opener=%s",pending_share_owner,pending_share_code,user_id)
-        from handlers.getfile import process_code
+                logging.exception(
+                    "SHARE POINT AWARD ERROR | owner=%s code=%s opener=%s",
+                    pending_share_owner,
+                    pending_share_code,
+                    user_id,
+                )
 
-        return await process_code(
-            message,
-            code
-        )
+        return result
 
     # =====================================================
     # HOME

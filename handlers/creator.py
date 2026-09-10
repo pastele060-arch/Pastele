@@ -268,7 +268,7 @@ async def creator_info(call: CallbackQuery):
 # =========================================================
 # CREATOR UPGRADE
 # =========================================================
-@router.callback_query(F.data == "creator_upgrade")
+# INTERNAL: routed centrally by handlers.pay
 async def creator_upgrade(call: CallbackQuery):
     await call.answer()
     pool = await get_pool()
@@ -332,7 +332,7 @@ async def creator_upgrade(call: CallbackQuery):
     await call.message.edit_text(
         labels.get(lang, labels["id"]) + f"\n\n💰 <b>{rupiah(CREATOR_UPGRADE_PRICE)}</b>",
         parse_mode="HTML",
-        reply_markup=payment_selector_markup("creatorpay", lang, methods),
+        reply_markup=payment_selector_markup("paycreatorpay", lang, methods),
     )
     return
 
@@ -397,7 +397,7 @@ async def _creator_auto(call: CallbackQuery, provider: str):
         except Exception: logging.exception("CREATOR QR ERROR")
     await call.message.answer(text,parse_mode="HTML",reply_markup=kb)
 
-@router.callback_query(F.data.startswith("creatorpay:"))
+# INTERNAL: routed centrally by handlers.pay
 async def creator_payment_method(call: CallbackQuery):
     await call.answer()
     parts=call.data.split(":")
@@ -411,7 +411,7 @@ async def creator_payment_method(call: CallbackQuery):
     if method=="bayargg": return await _creator_auto(call,"bayargg")
     if method=="manual": return await _creator_manual(call)
 
-@router.callback_query(F.data.startswith("creatorpaycheck:"))
+# INTERNAL: routed centrally by handlers.pay
 async def creator_payment_check(call: CallbackQuery):
     await call.answer()
     parts=call.data.split(":")
@@ -423,7 +423,7 @@ async def creator_payment_check(call: CallbackQuery):
     else: result=await BayarGG.check_payment(invoice); status=str((result or {}).get("status") or "").lower(); paid=status in {"paid","success","settled","completed"}
     if not paid: return await call.answer("⏳ Pembayaran belum diterima.",show_alert=True)
     await pool.execute("UPDATE creator_upgrade_payments SET status='approved',provider=$1,provider_invoice=$2,paid_at=NOW(),reviewed_at=NOW() WHERE id=$3 AND status='pending'",provider,invoice,txid)
-    await pool.execute("UPDATE users SET is_creator=TRUE,creator_status='approved',creator_verified_at=NOW(),updated_at=NOW() WHERE user_id=$1",call.from_user.id)
+    await pool.execute("UPDATE users SET is_creator=TRUE,creator_status='approved',creator_verified_at=NOW(),plan='creator',updated_at=NOW() WHERE user_id=$1",call.from_user.id)
     await pool.execute("UPDATE payments SET status='paid',paid_at=NOW() WHERE invoice_id=$1",invoice)
     lang=await get_user_language(call.from_user.id); msg={"id":"🎉 <b>Creator berhasil diaktifkan!</b>","en":"🎉 <b>Creator has been activated!</b>","zh":"🎉 <b>创作者已成功激活！</b>"}[lang]
     await call.message.answer(msg,parse_mode="HTML")
@@ -746,6 +746,7 @@ async def creator_upgrade_approve(
             is_creator = TRUE,
             creator_status = 'approved',
             creator_verified_at = NOW(),
+            plan = 'creator',
             updated_at = NOW()
         WHERE user_id = $1
         """,
@@ -755,30 +756,33 @@ async def creator_upgrade_approve(
     # NOTIFIKASI USER
     # =====================================================
     try:
+        user_lang = await get_user_language(tx["user_id"])
+        notify = {
+            "id": (
+                "🎉 <b>SELAMAT!</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+                "✅ Pembayaran Upgrade Creator kamu telah <b>DISETUJUI</b>.\n\n"
+                f"💰 Pembayaran: <b>{rupiah(tx['amount'])}</b>\n"
+                f"🧾 ID: <code>CREATOR-{tx['id']}</code>\n\n"
+                "🎨 Akun kamu sekarang resmi menjadi <b>Kreator Terverifikasi</b>."
+            ),
+            "en": (
+                "🎉 <b>CONGRATULATIONS!</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+                "✅ Your Creator upgrade payment has been <b>APPROVED</b>.\n\n"
+                f"💰 Payment: <b>{rupiah(tx['amount'])}</b>\n"
+                f"🧾 ID: <code>CREATOR-{tx['id']}</code>\n\n"
+                "🎨 Your account is now a <b>Verified Creator</b>."
+            ),
+            "zh": (
+                "🎉 <b>恭喜！</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+                "✅ 你的创作者升级付款已被<b>批准</b>。\n\n"
+                f"💰 付款：<b>{rupiah(tx['amount'])}</b>\n"
+                f"🧾 ID：<code>CREATOR-{tx['id']}</code>\n\n"
+                "🎨 你的账户现在已成为<b>认证创作者</b>。"
+            ),
+        }[user_lang]
         await call.bot.send_message(
             chat_id=tx["user_id"],
-            text=(
-                "🎉 <b>SELAMAT!</b>\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
-                "✅ Pembayaran Upgrade Creator kamu "
-                "telah <b>DISETUJUI</b> oleh admin.\n\n"
-                f"💰 Pembayaran: "
-                f"<b>{rupiah(tx['amount'])}</b>\n"
-                f"🧾 ID: "
-                f"<code>CREATOR-{tx['id']}</code>\n\n"
-                "🎨 Akun kamu sekarang resmi menjadi "
-                "<b>Kreator Terverifikasi</b>.\n\n"
-                "✨ <b>FITUR KREATOR</b>\n"
-                "📤 Upload code berbayar\n"
-                "💰 Mendapatkan penghasilan dari penjualan\n"
-                "📊 Mengelola code Marketplace\n"
-                "🛒 Menjual code kepada pengguna\n\n"
-                "👨‍🏫 <b>GROUP BIMBINGAN KREATOR</b>\n\n"
-                "Silakan masuk ke Group Kreator untuk "
-                "mendapatkan bimbingan, panduan, informasi "
-                "program, dan bantuan langsung dari admin.\n\n"
-                "👇 <b>Silakan bergabung sekarang.</b>"
-            ),
+            text=notify,
             parse_mode="HTML",
             reply_markup=creator_group_keyboard(),
         )
@@ -1437,6 +1441,7 @@ async def creator_approve(
             is_creator = TRUE,
             creator_status = 'approved',
             creator_verified_at = NOW(),
+            plan = 'creator',
             updated_at = NOW()
         WHERE user_id = $1
           AND creator_status IN ('pending', 'rejected', 'none')

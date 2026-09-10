@@ -27,7 +27,7 @@ from config import CHANNEL_ID, STORAGE_CHANNEL_ID
 from database import get_pool
 from keyboards.join import join_kb
 from utils.force_sub import check_force_sub
-from utils.share_unlock import telegram_setting
+from utils.share_unlock import telegram_setting, share_url
 from utils.user_lang import get_user_language
 
 
@@ -2680,23 +2680,74 @@ async def finalize_save(
         # =================================================
         # UPDATE CHANNEL
         # =================================================
+        # FREE uploader: never auto-post the code/upload to any channel.
+        # Paid/non-free uploads keep the existing channel log behaviour.
+        if not free_uploader:
+            await send_upload_log(
+                message.bot,
+                user_id=user_id,
+                title=title,
+                code=code,
+                media_count=media_count,
+                is_paid=is_paid,
+                price=price,
+            )
 
-        await send_upload_log(
-
-            message.bot,
-
-            user_id=user_id,
-
-            title=title,
-
-            code=code,
-
-            media_count=media_count,
-
-            is_paid=is_paid,
-
-            price=price,
-        )
+        # =================================================
+        # FREE SHARE REWARD NOTICE
+        # =================================================
+        # Sharing itself gives ZERO points. The owner gets +1 point only
+        # after a unique other user actually opens the shared code.
+        if free_uploader:
+            try:
+                me = await message.bot.get_me()
+                share_link = share_url(
+                    me.username or "",
+                    code,
+                    user_id,
+                    title,
+                )
+                share_text = {
+                    "id": (
+                        "🔗 <b>SHARE CODE & DAPATKAN POIN</b>\n\n"
+                        f"🔑 Code: <code>{safe_code}</code>\n"
+                        "Bagikan link ini. Setiap <b>1 pengguna unik</b> "
+                        "yang benar-benar membuka code memberi kamu <b>+1 poin</b>.\n\n"
+                        "⚠️ Membagikan link saja tidak memberikan poin."
+                    ),
+                    "en": (
+                        "🔗 <b>SHARE CODE & EARN POINTS</b>\n\n"
+                        f"🔑 Code: <code>{safe_code}</code>\n"
+                        "Share this link. Every <b>unique user</b> who actually opens "
+                        "the code gives you <b>+1 point</b>.\n\n"
+                        "⚠️ Sharing the link alone does not give points."
+                    ),
+                    "zh": (
+                        "🔗 <b>分享代码并赚取积分</b>\n\n"
+                        f"🔑 代码：<code>{safe_code}</code>\n"
+                        "每一位<b>真正打开代码的独立用户</b>可为你增加 <b>+1 积分</b>。\n\n"
+                        "⚠️ 仅分享链接不会获得积分。"
+                    ),
+                }[lang]
+                share_button = {
+                    "id": "🔗 Bagikan Code",
+                    "en": "🔗 Share Code",
+                    "zh": "🔗 分享代码",
+                }[lang]
+                await message.answer(
+                    share_text,
+                    parse_mode="HTML",
+                    reply_markup=InlineKeyboardMarkup(
+                        inline_keyboard=[[
+                            InlineKeyboardButton(
+                                text=share_button,
+                                url=share_link,
+                            )
+                        ]]
+                    ),
+                )
+            except Exception:
+                logger.exception("FREE SHARE NOTICE ERROR | code=%s", code)
 
     # =====================================================
     # FINAL ERROR
