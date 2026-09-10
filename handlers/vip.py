@@ -1550,4 +1550,8 @@ async def vip_wait(
         "en":f"🎉 <b>Payment successful!</b>\n\n💎 Account status: <b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 Duration: <b>{days} days</b>",
         "zh":f"🎉 <b>支付成功！</b>\n\n💎 账户状态：<b>{'VVIP' if is_vvip else 'VIP'}</b>\n📅 有效期：<b>{days} 天</b>",
     }[lang]
+    try:
+        await pool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','VIP Payment',$2)", call.from_user.id, msg)
+    except Exception:
+        logger.exception("VIP AUTO USER NOTIFICATION INSERT ERROR")
     return await call.message.answer(msg,parse_mode="HTML")

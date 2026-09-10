@@ -426,6 +426,10 @@ async def creator_payment_check(call: CallbackQuery):
     await pool.execute("UPDATE users SET is_creator=TRUE,creator_status='approved',creator_verified_at=NOW(),plan='creator',updated_at=NOW() WHERE user_id=$1",call.from_user.id)
     await pool.execute("UPDATE payments SET status='paid',paid_at=NOW() WHERE invoice_id=$1",invoice)
     lang=await get_user_language(call.from_user.id); msg={"id":"🎉 <b>Creator berhasil diaktifkan!</b>","en":"🎉 <b>Creator has been activated!</b>","zh":"🎉 <b>创作者已成功激活！</b>"}[lang]
+    try:
+        await pool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','Creator Payment',$2)", call.from_user.id, msg)
+    except Exception:
+        logging.exception("CREATOR AUTO USER NOTIFICATION INSERT ERROR")
     await call.message.answer(msg,parse_mode="HTML")
 
     # legacy code below is intentionally unreachable after the method selector.

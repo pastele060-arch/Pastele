@@ -12,6 +12,8 @@ from aiogram.types import (
 from database import get_pool
 from utils.points import get_points, checkin, fmt_points
 from utils.cashi import Cashi
+from utils.bayargg import BayarGG
+from config import ADMIN_IDS
 
 
 router = Router()
@@ -565,132 +567,160 @@ async def settle(order_id: str):
 # ============================================================
 
 async def points_check(call: CallbackQuery):
-
-    await call.answer(
-        "⏳ Mengecek..."
-    )
-
     try:
-        order = call.data.split(
-            ":",
-            1,
-        )[1]
-    except (
-        ValueError,
-        IndexError,
-    ):
-        return await call.answer(
-            "❌ Order tidak valid.",
-            show_alert=True,
-        )
+        await call.answer("⏳ Mengecek...")
+    except Exception:
+        pass
+    try:
+        order = call.data.split(":", 1)[1].strip()
+    except (ValueError, IndexError):
+        return await call.answer("❌ Order tidak valid.", show_alert=True)
 
-    uid = call.from_user.id
-
+    uid = int(call.from_user.id)
     pool = await get_pool()
-
     row = await pool.fetchrow(
-        """
-        SELECT *
-        FROM point_orders
-        WHERE order_id = $1
-          AND user_id = $2
-        """,
-        order,
-        uid,
+        "SELECT * FROM point_orders WHERE order_id=$1 AND user_id=$2",
+        order, uid,
     )
-
     if not row:
-        return await call.message.answer(
-            "❌ Order tidak ditemukan."
-        )
+        return await call.message.answer("❌ Order tidak ditemukan.")
 
-    if str(
-        row["status"] or ""
-    ).lower() == "paid":
+    status_local = str(row["status"] or "").lower()
+    provider = str(row["provider"] or "cashi").lower()
 
-        pts = await get_points(
-            pool,
-            uid,
-        )
-
-        return await call.message.answer(
-            "✅ <b>Poin sudah ditambahkan.</b>\n\n"
-            f"⭐ Total: <b>{fmt_points(pts)}</b>",
-            parse_mode="HTML",
-        )
-
-    # asyncpg.Record tidak perlu .get().
-    # Cek nama kolom secara aman.
-    try:
-        provider_value = row["provider"]
-    except (KeyError, TypeError):
-        provider_value = None
-
-    provider = str(
-        provider_value or "cashi"
-    ).lower()
-
-    # ========================================================
-    # BAYARGG
-    # ========================================================
-
-    if provider == "bayargg":
-
-        from utils.bayargg import BayarGG
-
-        result = await BayarGG.check_payment(
-            order
-        )
-
-    # ========================================================
-    # CASHI
-    # ========================================================
-
-    else:
-
-        result = await Cashi.check_payment(
-            order
-        )
-
-    status = str(
-        (result or {}).get("status") or ""
-    ).lower()
-
-    success_statuses = {
-        "paid",
-        "success",
-        "settled",
-        "completed",
-        "completed_payment",
-        "success_payment",
-        "settlement",
-    }
-
-    if status in success_statuses:
-
-        success = await settle(
-            order
-        )
-
-        if not success:
+    # Manual QR is never auto-approved. User reports payment -> admin verifies.
+    if provider == "manual":
+        if status_local == "paid":
+            pts = await get_points(pool, uid)
             return await call.message.answer(
-                "❌ Gagal menambahkan poin. "
-                "Silakan coba lagi."
+                f"✅ <b>Poin sudah ditambahkan.</b>\n\n⭐ Total: <b>{fmt_points(pts)}</b>", parse_mode="HTML"
             )
+        if status_local == "verifying":
+            return await call.answer("⏳ Sudah dikirim ke admin. Tunggu persetujuan.", show_alert=True)
 
-        pts = await get_points(
-            pool,
-            uid,
+        await pool.execute(
+            "UPDATE point_orders SET status='verifying', updated_at=NOW() WHERE id=$1 AND status='pending'",
+            row["id"],
         )
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ APPROVE", callback_data=f"pointapprove:{row['id']}"),
+            InlineKeyboardButton(text="❌ REJECT", callback_data=f"pointreject:{row['id']}"),
+        ]])
+        admin_text = (
+            "📥 <b>PEMBAYARAN POIN MANUAL</b>\n"
+            "━━━━━━━━━━━━━━\n\n"
+            f"👤 User: <code>{uid}</code>\n"
+            f"⭐ Poin: <b>{fmt_points(row['points'])}</b>\n"
+            f"💰 Nominal: <b>Rp {int(row['amount']):,}</b>\n"
+            f"🧾 Order: <code>{order}</code>\n\n"
+            "🔎 Cek pembayaran lalu pilih APPROVE atau REJECT."
+        ).replace(",", ".")
+        sent = 0
+        for admin_id in ADMIN_IDS:
+            try:
+                await call.bot.send_message(admin_id, admin_text, parse_mode="HTML", reply_markup=kb)
+                sent += 1
+            except Exception:
+                logger.exception("POINT MANUAL ADMIN NOTIFY ERROR admin=%s", admin_id)
+        lang = "id"
+        try:
+            from utils.user_lang import get_user_language
+            lang = await get_user_language(uid)
+        except Exception:
+            pass
+        if sent:
+            msg = {
+                "id":"⏳ <b>Menunggu persetujuan admin.</b>\n\nPembayaran kamu sudah dilaporkan. Poin akan masuk setelah admin menyetujui.",
+                "en":"⏳ <b>Waiting for admin approval.</b>\n\nYour payment has been reported. Points will be added after admin approval.",
+                "zh":"⏳ <b>等待管理员审核。</b>\n\n付款已提交，管理员批准后积分会到账。",
+            }[lang]
+            return await call.message.answer(msg, parse_mode="HTML")
+        return await call.message.answer("❌ Admin tidak dapat menerima notifikasi.")
 
+    if status_local == "paid":
+        pts = await get_points(pool, uid)
         return await call.message.answer(
-            "✅ <b>Pembayaran berhasil!</b>\n\n"
-            f"⭐ +{fmt_points(row['points'])} poin\n"
-            f"⭐ Total: <b>{fmt_points(pts)}</b>",
-            parse_mode="HTML",
+            "✅ <b>Poin sudah ditambahkan.</b>\n\n" f"⭐ Total: <b>{fmt_points(pts)}</b>", parse_mode="HTML"
         )
 
-    return await call.answer(
-        "⏳ Belum terkonfirmasi.",
-        show_alert=True,
-    )
+    try:
+        result = await (BayarGG.check_payment(order) if provider == "bayargg" else Cashi.check_payment(order))
+    except Exception:
+        logger.exception("POINT PAYMENT CHECK ERROR provider=%s order=%s", provider, order)
+        return await call.answer("❌ Gagal mengecek pembayaran.", show_alert=True)
+
+    remote = str((result or {}).get("status") or "").lower()
+    if remote in {"paid","success","settled","completed","completed_payment","success_payment","settlement"}:
+        success = await settle(order)
+        if not success:
+            return await call.message.answer("❌ Gagal menambahkan poin. Silakan coba lagi.")
+        pts = await get_points(pool, uid)
+        lang = "id"
+        try:
+            from utils.user_lang import get_user_language
+            lang = await get_user_language(uid)
+        except Exception:
+            pass
+        msg = {
+            "id":f"🎉 <b>Pembelian poin berhasil!</b>\n\n⭐ +{fmt_points(row['points'])} poin\n⭐ Total: <b>{fmt_points(pts)}</b>\n\nPoin sudah ditambahkan ke akun kamu.",
+            "en":f"🎉 <b>Point purchase successful!</b>\n\n⭐ +{fmt_points(row['points'])} points\n⭐ Total: <b>{fmt_points(pts)}</b>\n\nThe points have been added to your account.",
+            "zh":f"🎉 <b>积分购买成功！</b>\n\n⭐ +{fmt_points(row['points'])} 积分\n⭐ 总计：<b>{fmt_points(pts)}</b>\n\n积分已添加到你的账户。",
+        }[lang]
+        try:
+            await pool.execute(
+                "INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','Points Purchase',$2)",
+                uid, msg,
+            )
+        except Exception:
+            logger.exception("POINT USER NOTIFICATION INSERT ERROR")
+        return await call.message.answer(msg, parse_mode="HTML")
+
+    return await call.answer("⏳ Belum terkonfirmasi.", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("pointapprove:"))
+async def point_manual_approve(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Bukan admin.", show_alert=True)
+    await call.answer()
+    try: oid=int(call.data.split(":",1)[1])
+    except Exception: return await call.answer("❌ Order tidak valid.",show_alert=True)
+    pool=await get_pool()
+    row=await pool.fetchrow("SELECT * FROM point_orders WHERE id=$1 AND provider='manual' AND status='verifying'",oid)
+    if not row: return await call.answer("❌ Order sudah diproses.",show_alert=True)
+    ok=await settle(str(row["order_id"]))
+    if not ok: return await call.answer("❌ Gagal menambahkan poin.",show_alert=True)
+    pts=await get_points(pool,row["user_id"])
+    lang="id"
+    try:
+        from utils.user_lang import get_user_language
+        lang=await get_user_language(row["user_id"])
+    except Exception: pass
+    msg={
+        "id":f"🎉 <b>Poin berhasil masuk!</b>\n\n⭐ +{fmt_points(row['points'])} poin\n⭐ Total: <b>{fmt_points(pts)}</b>\n\n💳 Pembayaran manual kamu telah disetujui admin.",
+        "en":f"🎉 <b>Points added successfully!</b>\n\n⭐ +{fmt_points(row['points'])} points\n⭐ Total: <b>{fmt_points(pts)}</b>\n\n💳 Your manual payment was approved by admin.",
+        "zh":f"🎉 <b>积分已到账！</b>\n\n⭐ +{fmt_points(row['points'])} 积分\n⭐ 总计：<b>{fmt_points(pts)}</b>\n\n💳 你的手动付款已获管理员批准。",
+    }[lang]
+    try:
+        await pool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','Points Payment',$2)",row["user_id"],msg)
+        await call.bot.send_message(row["user_id"],msg,parse_mode="HTML")
+    except Exception: logger.exception("POINT APPROVE USER NOTIFY ERROR")
+    await call.message.edit_text("✅ <b>PEMBAYARAN POIN DISETUJUI</b>\n\n"+f"👤 <code>{row['user_id']}</code>\n⭐ +{fmt_points(row['points'])} poin",parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("pointreject:"))
+async def point_manual_reject(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Bukan admin.", show_alert=True)
+    await call.answer()
+    try: oid=int(call.data.split(":",1)[1])
+    except Exception: return
+    pool=await get_pool()
+    row=await pool.fetchrow("UPDATE point_orders SET status='rejected',updated_at=NOW() WHERE id=$1 AND provider='manual' AND status='verifying' RETURNING *",oid)
+    if not row: return await call.answer("❌ Order sudah diproses.",show_alert=True)
+    msg="❌ <b>Pembayaran poin ditolak admin.</b>\n\nSilakan periksa pembayaran kamu dan lakukan kembali jika diperlukan."
+    try:
+        await pool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','Points Payment Rejected',$2)",row["user_id"],msg)
+        await call.bot.send_message(row["user_id"],msg,parse_mode="HTML")
+    except Exception: logger.exception("POINT REJECT USER NOTIFY ERROR")
+    await call.message.edit_text("❌ <b>PEMBAYARAN POIN DITOLAK</b>\n\n"+f"👤 <code>{row['user_id']}</code>\n⭐ {fmt_points(row['points'])} poin",parse_mode="HTML")
