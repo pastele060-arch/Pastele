@@ -367,6 +367,7 @@ async def open_file_by_code(
     message: Message,
     code: str,
     state: FSMContext,
+    paid_override: bool = False,
 ):
     """
     Membuka file berdasarkan code.
@@ -655,7 +656,7 @@ async def open_file_by_code(
     lang = await get_user_language(message.from_user.id)
 
     if is_paid and not owner:
-        paid_purchase = bool(access)
+        paid_purchase = bool(access) or bool(paid_override)
         point_unlocked = False
         try:
             point_unlocked = bool(await pool.fetchval(
@@ -753,6 +754,7 @@ async def paid_point_unlock(call: CallbackQuery):
 async def process_code(
     message: Message,
     code: str,
+    paid_override: bool = False,
 ):
     """
     Compatibility helper untuk pemanggilan dari handler lain.
@@ -775,6 +777,7 @@ async def process_code(
         message=message,
         code=code,
         state=DummyState(),
+        paid_override=paid_override,
     )
 
 

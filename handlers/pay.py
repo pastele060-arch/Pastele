@@ -1103,8 +1103,11 @@ async def choose_payment(
         code,
     )
     if paid:
-        return await call.message.answer(
-            "✅ Kamu sudah membeli file ini."
+        from handlers.getfile import process_code
+        return await process_code(
+            call.message,
+            code,
+            paid_override=True,
         )
     # --------------------------------------------------------
     # Jika ada satu active, tampilkan transaksi tersebut.
@@ -2403,7 +2406,8 @@ async def create_manual_payment(
 
     paid = await get_paid_purchase(user_id, code)
     if paid:
-        return await call.message.answer("✅ Kamu sudah membeli file ini.")
+        from handlers.getfile import process_code
+        return await process_code(call.message, code, paid_override=True)
 
     # Reuse an existing pending manual transaction if one exists.
     existing = await get_active_method_purchase(user_id, code, "MANUAL-")
@@ -2423,7 +2427,8 @@ async def create_manual_payment(
     purchase = result["purchase"]
 
     if result.get("already_paid"):
-        return await call.message.answer("✅ Kamu sudah membeli file ini.")
+        from handlers.getfile import process_code
+        return await process_code(call.message, code, paid_override=True)
 
     if result.get("existing"):
         existing_method = purchase_method(purchase)
@@ -3153,6 +3158,7 @@ async def complete_success_side_effects(
         await process_code(
             message,
             code,
+            paid_override=True,
         )
     except Exception:
         logger.exception(
@@ -3223,7 +3229,7 @@ async def finish_payment(
             if paid:
                 try:
                     from handlers.getfile import process_code
-                    await process_code(message, code)
+                    await process_code(message, code, paid_override=True)
                     return True
                 except Exception:
                     logger.exception("REOPEN PAID FILE ERROR | code=%s user=%s", code, user_id)
@@ -3663,7 +3669,7 @@ async def finish_manual_payment(
             if paid:
                 try:
                     from handlers.getfile import process_code
-                    await process_code(message, code)
+                    await process_code(message, code, paid_override=True)
                     return True
                 except Exception:
                     logger.exception("REOPEN MANUAL PAID FILE ERROR | code=%s user=%s", code, user_id)

@@ -62,14 +62,18 @@ async def create_bayargg(call:CallbackQuery, code:str, file):
     uid=int(call.from_user.id); price=int(file.get("price") or 0)
     if price<=0: return await call.message.answer("❌ Harga file tidak valid.")
     paid=await get_paid_purchase(uid,code)
-    if paid: return await call.message.answer("✅ Kamu sudah membeli file ini.")
+    if paid:
+        from handlers.getfile import process_code
+        return await process_code(call.message, code, paid_override=True)
     existing=await get_active_method_purchase(uid,code,"BAYARGG-")
     if existing:
         return await call.message.answer("⏳ Transaksi BayarGG masih aktif. Tekan cek pembayaran.", reply_markup=kb(existing["id"]))
     result=await get_or_create_purchase(uid,code,file,payment_prefix="BAYARGG-")
     if not result: return await call.message.answer("❌ Gagal membuat transaksi.")
     purchase=result["purchase"]
-    if result.get("already_paid"): return await call.message.answer("✅ Kamu sudah membeli file ini.")
+    if result.get("already_paid"):
+        from handlers.getfile import process_code
+        return await process_code(call.message, code, paid_override=True)
     if result.get("existing"):
         if purchase_method(purchase)=="bayargg":
             return await call.message.answer("⏳ Transaksi BayarGG masih aktif.",reply_markup=kb(purchase["id"]))
