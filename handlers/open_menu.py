@@ -55,71 +55,38 @@ async def open_code_callback(call: CallbackQuery, state=None):
 
 @router.callback_query(F.data.startswith("all:"))
 async def open_all(call: CallbackQuery):
-    code = call.data.split(":", 1)[1]
-
-    # Jawab callback agar tidak timeout
+    """Canonical Open All entry. Delivery/access logic lives in sendall.py."""
+    code = call.data.split(":", 1)[1].strip()
+    lang = await get_user_language(call.from_user.id)
+    ack = {"id":"⏳ Menyiapkan semua media...","en":"⏳ Preparing all media...","zh":"⏳ 正在准备全部媒体……"}.get(lang, "⏳ Menyiapkan semua media...")
     try:
-        await call.answer("⏳ Processing...")
-    except:
+        await call.answer(ack)
+    except Exception:
         pass
 
     pool = await get_pool()
-
     file = await pool.fetchrow(
-        """
-        SELECT *
-        FROM files
-        WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
-        LIMIT 1
-        """,
-        code
+        """SELECT * FROM files
+           WHERE LOWER(TRIM(code)) = LOWER(TRIM($1))
+           LIMIT 1""",
+        code,
     )
-
     if not file:
         try:
             await call.answer(
-                "❌ File tidak ditemukan.",
-                show_alert=True
+                {"id":"❌ File tidak ditemukan.","en":"❌ File not found.","zh":"❌ 找不到文件。"}.get(lang, "❌ File tidak ditemukan."),
+                show_alert=True,
             )
-        except:
+        except Exception:
             pass
         return
 
-    # Ambil status user
-    user_level = await get_user_status(
-        pool,
-        call.from_user.id
-    )
-
-    # Share is optional. It never unlocks a file by itself; opening a shared
-    # code may award +1 point to the code owner once per unique opener.
-    try:
-        media = file.get("media")
-        if isinstance(media, str):
-            import json
-            media = json.loads(media)
-        media_count = len(media or [])
-    except Exception:
-        media_count = int(file.get("media_count") or 0)
-
-    owner = int(file.get("owner_id") or 0) == int(call.from_user.id)
-    paid_access = bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM file_purchases WHERE user_id=$1 AND (LOWER(TRIM(COALESCE(file_code,'')))=LOWER(TRIM($2)) OR LOWER(TRIM(COALESCE(code,'')))=LOWER(TRIM($2))) AND status='paid')", call.from_user.id, code))
-    point_unlock = bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(TRIM(code))=LOWER(TRIM($2)))", call.from_user.id, code))
-    if bool(file.get("is_paid")):
-        privileged = owner or paid_access or point_unlock
-        if not privileged:
-            from handlers.pay import paid_unlock_keyboard
-            lang=await get_user_language(call.from_user.id); price=int(file.get("price") or 0)
-            text={"id":f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Harga: <b>Rp {price:,}</b>\n\nPilih cara membuka file:","en":f"🔒 <b>PAID FILE</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Price: <b>Rp {price:,}</b>\n\nChoose how to unlock this file:","zh":f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{code}</code>\n💰 价格：<b>Rp {price:,}</b>\n\n请选择解锁方式："}
-            return await call.message.answer(text.get(lang,text["id"]),parse_mode="HTML",reply_markup=paid_unlock_keyboard(code,lang))
-    else:
-        privileged = owner or user_level in ("vip", "vvip")
-
-    # Kirim semua media
+    user_level = await get_user_status(pool, call.from_user.id)
+    # send_all.py is the single canonical Open All implementation.
     await send_all(
         bot=call.bot,
         chat_id=call.message.chat.id,
-        code=code,
+        code=str(file.get("code") or code),
         file=file,
-        user_level=user_level
+        user_level=user_level,
     )

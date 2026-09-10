@@ -3277,9 +3277,13 @@ async def finish_payment(
 async def manual_check(
     call: CallbackQuery,
 ):
-    await call.answer(
-        "⏳ Mengirim permintaan verifikasi..."
-    )
+    lang = await get_user_language(call.from_user.id)
+    verify_ack = {
+        "id": "⏳ Menunggu persetujuan admin...",
+        "en": "⏳ Waiting for admin approval...",
+        "zh": "⏳ 等待管理员审核……",
+    }.get(lang, "⏳ Menunggu persetujuan admin...")
+    await call.answer(verify_ack)
     try:
         token = call.data.split(
             ":",
@@ -3422,10 +3426,11 @@ async def manual_check(
             )
         )
     await call.message.answer(
-        (
-            "✅ <b>Permintaan verifikasi dikirim.</b>\n\n"
-            "⏳ Tunggu admin memeriksa pembayaran."
-        ),
+        {
+            "id": "✅ <b>Permintaan pembayaran terkirim.</b>\n\n⏳ Silakan tunggu persetujuan admin. File akan terbuka setelah admin menyetujui pembayaran.",
+            "en": "✅ <b>Payment verification request sent.</b>\n\n⏳ Please wait for admin approval. The file will open after approval.",
+            "zh": "✅ <b>付款审核请求已发送。</b>\n\n⏳ 请等待管理员批准。管理员批准后文件将自动打开。",
+        }.get(lang, "✅ <b>Permintaan pembayaran terkirim.</b>\n\n⏳ Silakan tunggu persetujuan admin."),
         parse_mode="HTML",
     )
 # ============================================================
@@ -3525,12 +3530,14 @@ async def approve_manual(
         purchase.get("user_id")
     )
     try:
+        lang = await get_user_language(user_id)
         user_message = await call.bot.send_message(
             user_id,
-            (
-                "⏳ <b>Pembayaran manual disetujui.</b>\n\n"
-                "Sedang memproses file..."
-            ),
+            {
+                "id": "✅ <b>Pembayaran manual disetujui admin.</b>\n\n📂 Membuka menu file...",
+                "en": "✅ <b>Manual payment approved by admin.</b>\n\n📂 Opening file menu...",
+                "zh": "✅ <b>管理员已批准手动付款。</b>\n\n📂 正在打开文件菜单……",
+            }.get(lang, "✅ <b>Pembayaran manual disetujui admin.</b>\n\n📂 Membuka menu file..."),
             parse_mode="HTML",
         )
     except Exception:

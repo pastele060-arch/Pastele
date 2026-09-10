@@ -108,7 +108,12 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
             failed += 1
             continue
         message_id = item.get("message_id")
-        if not message_id:
+        storage_message_id = (
+            item.get("storage_message_id")
+            or item.get("channel_message_id")
+            or (message_id if not item.get("source_chat_id") else None)
+        )
+        if not message_id and not storage_message_id:
             failed += 1
             continue
 
@@ -118,26 +123,64 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
         media_code = f"{code}-m{pos:03d}"
         media_caption = media_watermark(lang, media_code, bot_name, pos, total)
 
+        # Stored files are intentionally delivered from the Storage Channel.
+        # The storage message_id is the durable reference that survives bot
+        # replacement. file_id is only a fallback when Telegram cannot copy
+        # the stored message.
+        storage_message_id = (
+            item.get("storage_message_id")
+            or item.get("channel_message_id")
+            or (message_id if not item.get("source_chat_id") else None)
+        )
+        source_chat_id = item.get("source_chat_id")
+        fid = item.get("file_id")
+        typ = str(item.get("type") or "document").lower()
+
         try:
             try:
                 await bot.send_chat_action(chat_id=chat_id, action="typing")
             except Exception:
                 pass
-            source_chat_id = item.get("source_chat_id")
-            if source_chat_id:
+
+            result = None
+            if source_chat_id and not storage_message_id:
+                # FREE/non-storage media: original user message.
                 result = await safe_copy_from_source(
                     bot, chat_id, source_chat_id, message_id,
-                    protect_content=protect, delay=0.0, caption=media_caption)
-            else:
-                source_chat_id = item.get("source_chat_id")
-                if source_chat_id:
-                    result = await safe_copy_from_source(
-                        bot, chat_id, source_chat_id, message_id,
-                        protect_content=protect, delay=0.0, caption=media_caption)
+                    protect_content=protect, delay=0.0,
+                    caption=media_caption
+                )
+            elif storage_message_id:
+                # PAID/stored media: Storage Channel is the primary source.
+                result = await safe_copy_from_storage(
+                    bot, chat_id, storage_message_id,
+                    protect_content=protect, delay=0.0,
+                    caption=media_caption
+                )
+
+            # file_id is only a fallback, never the primary storage route.
+            if result is None and fid:
+                if typ == "photo":
+                    result = await bot.send_photo(
+                        chat_id, fid, caption=media_caption,
+                        parse_mode="HTML", protect_content=protect)
+                elif typ == "video":
+                    result = await bot.send_video(
+                        chat_id, fid, caption=media_caption,
+                        parse_mode="HTML", protect_content=protect)
+                elif typ == "audio":
+                    result = await bot.send_audio(
+                        chat_id, fid, caption=media_caption,
+                        parse_mode="HTML", protect_content=protect)
+                elif typ == "voice":
+                    result = await bot.send_voice(
+                        chat_id, fid, caption=media_caption,
+                        parse_mode="HTML", protect_content=protect)
                 else:
-                    result = await safe_copy_from_storage(
-                        bot, chat_id, message_id, protect_content=protect,
-                        delay=0.0, caption=media_caption)
+                    result = await bot.send_document(
+                        chat_id, fid, caption=media_caption,
+                        parse_mode="HTML", protect_content=protect)
+
             if result is not None:
                 success += 1
             else:
@@ -145,15 +188,24 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
         except TelegramRetryAfter as exc:
             await asyncio.sleep(max(float(exc.retry_after), 1.0) + 0.5)
             try:
-                result = await safe_copy_from_storage(
-                    bot, chat_id, message_id, protect_content=protect,
-                    delay=0.0, caption=media_caption)
-                success += 1 if result is not None else 0
-                failed += 0 if result is not None else 1
+                if fid:
+                    if typ == "photo":
+                        result = await bot.send_photo(chat_id, fid, caption=media_caption, parse_mode="HTML", protect_content=protect)
+                    elif typ == "video":
+                        result = await bot.send_video(chat_id, fid, caption=media_caption, parse_mode="HTML", protect_content=protect)
+                    elif typ == "audio":
+                        result = await bot.send_audio(chat_id, fid, caption=media_caption, parse_mode="HTML", protect_content=protect)
+                    else:
+                        result = await bot.send_document(chat_id, fid, caption=media_caption, parse_mode="HTML", protect_content=protect)
+                    success += 1
+                else:
+                    failed += 1
             except Exception:
                 failed += 1
         except Exception:
+            logger.exception("OPEN ALL MEDIA ERROR | code=%s media=%s", code, pos)
             failed += 1
+
 
         if pos < batch_end:
             await asyncio.sleep(max(float(send_interval), 2.0))
