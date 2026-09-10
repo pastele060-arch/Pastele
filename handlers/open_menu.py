@@ -91,8 +91,8 @@ async def open_all(call: CallbackQuery):
         call.from_user.id
     )
 
-    # SHARE-TO-UNLOCK GATE. Paid codes require 10 genuinely new
-    # members; free codes use ceil(media_count / 5).
+    # Share is optional. It never unlocks a file by itself; opening a shared
+    # code may award +1 point to the code owner once per unique opener.
     try:
         media = file.get("media")
         if isinstance(media, str):
