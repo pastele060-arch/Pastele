@@ -622,7 +622,10 @@ async def create_cashi(
                     qr_image,
                     payment_url,
                     expires_at,
-                    created_at
+                    created_at,
+                    provider,
+                    payment_method,
+                    code
                 )
                 VALUES
                 (
@@ -636,9 +639,11 @@ async def create_cashi(
                     $7,
                     $8,
                     $9,
-                    NOW()
+                    NOW(),
+                    'CASHI',
+                    'qris',
+                    $2
                 )
-                ON CONFLICT (user_id, file_code) DO NOTHING
                 RETURNING *
                 """,
                 user_id,

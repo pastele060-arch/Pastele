@@ -1218,13 +1218,7 @@ async def get_or_create_purchase(
     file,
     payment_prefix: str,
 ):
-    """Return one active purchase, creating it atomically when necessary.
-
-    The UNIQUE(user_id, file_code) constraint is intentional. Two fast
-    callbacks can reach this function at the same time, so a read-then-
-    INSERT sequence is not safe. INSERT ... ON CONFLICT makes the operation
-    idempotent and prevents the duplicate-key error seen in production.
-    """
+    """Return one active purchase, reusing an existing active row when possible."""
     user_id = int(user_id)
     code = str(code or "").strip()
     payment_prefix = str(payment_prefix or "").strip()
@@ -1256,9 +1250,8 @@ async def get_or_create_purchase(
     )
 
     try:
-        # IMPORTANT:
-        # file_purchases has UNIQUE(user_id, file_code), therefore two
-        # simultaneous callbacks must never be allowed to raise an error.
+        # Do not require a UNIQUE(user_id, file_code) constraint here.
+        # The provider-specific flow already reuses active transactions.
         purchase = await fetchrow(
             """
             INSERT INTO file_purchases
@@ -1276,8 +1269,7 @@ async def get_or_create_purchase(
                 expires_at,
                 qr_message_id,
                 qr_chat_id,
-                media_session_id,
-                gateway_order_id
+                media_session_id
             )
             VALUES
             (
@@ -1288,7 +1280,6 @@ async def get_or_create_purchase(
                 $5,
                 'pending',
                 NOW(),
-                NULL,
                 NULL,
                 NULL,
                 NULL,
@@ -1348,9 +1339,6 @@ async def get_or_create_purchase(
             "existing": False,
         }
 
-    # ON CONFLICT DO NOTHING means another request already owns the
-    # unique (user_id, file_code) row. Fetch it instead of attempting
-    # another INSERT.
     paid = await get_paid_purchase(user_id, code)
     if paid:
         return {
@@ -1359,9 +1347,8 @@ async def get_or_create_purchase(
             "existing": True,
         }
 
-    # Because the database intentionally has UNIQUE(user_id, file_code),
-    # there can only be one active purchase row for a user/file. If another
-    # callback created it first, reuse that row regardless of its method.
+    # If another callback created an active row first, reuse it regardless
+    # of provider/method.
     active_any = await fetchrow(
         """
         SELECT *
