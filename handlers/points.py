@@ -14,6 +14,7 @@ from utils.points import get_points, checkin, fmt_points
 from utils.cashi import Cashi
 from utils.bayargg import BayarGG
 from config import ADMIN_IDS
+from utils.payment_channel import send_payment_success_channel
 
 
 router = Router()
@@ -673,6 +674,10 @@ async def points_check(call: CallbackQuery):
             )
         except Exception:
             logger.exception("POINT USER NOTIFICATION INSERT ERROR")
+        await send_payment_success_channel(
+            call.bot, "points", uid, row.get("amount"), provider,
+            f"{fmt_points(row['points'])} Points", order
+        )
         return await call.message.answer(msg, parse_mode="HTML")
 
     return await call.answer("⏳ Belum terkonfirmasi.", show_alert=True)
@@ -705,6 +710,10 @@ async def point_manual_approve(call: CallbackQuery):
         await pool.execute("INSERT INTO user_notifications(user_id,type,title,message) VALUES($1,'payment','Points Payment',$2)",row["user_id"],msg)
         await call.bot.send_message(row["user_id"],msg,parse_mode="HTML")
     except Exception: logger.exception("POINT APPROVE USER NOTIFY ERROR")
+    await send_payment_success_channel(
+        call.bot, "points", row["user_id"], row.get("amount"), "manual",
+        f"{fmt_points(row['points'])} Points", str(row["order_id"])
+    )
     await call.message.edit_text("✅ <b>PEMBAYARAN POIN DISETUJUI</b>\n\n"+f"👤 <code>{row['user_id']}</code>\n⭐ +{fmt_points(row['points'])} poin",parse_mode="HTML")
 
 

@@ -1010,8 +1010,7 @@ async def _send_point_qr(call, points_amount: int, price_amount: int, order_id: 
 async def payvip_method_bridge(call: CallbackQuery):
     try:
         from handlers.vip import vip_method
-        # Convert only the internal callback namespace; all entry still comes from pay.py.
-        call.data = call.data.replace("payvipmethod:", "vipmethod:", 1)
+        # vip_method accepts both central and legacy namespaces.
         return await vip_method(call)
     except Exception:
         logger.exception("PAY VIP METHOD ERROR")
@@ -1021,7 +1020,7 @@ async def payvip_method_bridge(call: CallbackQuery):
 async def paycreator_method_bridge(call: CallbackQuery):
     try:
         from handlers.creator import creator_payment_method
-        call.data = call.data.replace("paycreatorpay:", "creatorpay:", 1)
+        # creator_payment_method accepts both central and legacy namespaces.
         return await creator_payment_method(call)
     except Exception:
         logger.exception("PAY CREATOR METHOD ERROR")
