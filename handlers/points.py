@@ -47,56 +47,21 @@ PACKAGES = [
 
 def menu_kb(lang: str) -> InlineKeyboardMarkup:
     labels = {
-        "id": (
-            "📅 Cek In Harian",
-            "💳 Buy Poin",
-            "📖 Kegunaan Poin",
-            "⬅️ Kembali",
-        ),
-        "en": (
-            "📅 Daily Check-in",
-            "💳 Buy Points",
-            "📖 How Points Work",
-            "⬅️ Back",
-        ),
-        "zh": (
-            "📅 每日签到",
-            "💳 购买积分",
-            "📖 积分说明",
-            "⬅️ 返回",
-        ),
+        "id": ("📅 Cek In Harian", "💳 Buy Poin", "📖 Kegunaan Poin", "⬅️ Kembali"),
+        "en": ("📅 Daily Check-in", "💳 Buy Points", "📖 How Points Work", "⬅️ Back"),
+        "zh": ("📅 每日签到", "💳 购买积分", "📖 积分说明", "⬅️ 返回"),
     }
-
     a, b, c, d = labels.get(lang, labels["id"])
-
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=a,
-                    callback_data="points_checkin",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=b,
-                    callback_data="points_buy",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=c,
-                    callback_data="points_info",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=d,
-                    callback_data="home",
-                )
-            ],
-        ]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=a, callback_data="points_checkin"),
+            InlineKeyboardButton(text=b, callback_data="points_buy"),
+        ],
+        [
+            InlineKeyboardButton(text=c, callback_data="points_info"),
+            InlineKeyboardButton(text=d, callback_data="home"),
+        ],
+    ])
 
 
 # ============================================================
@@ -122,59 +87,76 @@ async def lang(uid: int) -> str:
 # POINTS MAIN PAGE
 # ============================================================
 
+async def _checkin_summary(pool, uid: int):
+    row = await pool.fetchrow(
+        "SELECT checkin_streak,last_checkin_date FROM users WHERE user_id=$1", uid
+    )
+    total = await pool.fetchval(
+        "SELECT COUNT(*) FROM point_checkins WHERE user_id=$1", uid
+    )
+    streak = int(row["checkin_streak"] or 0) if row else 0
+    return streak, row["last_checkin_date"] if row else None, int(total or 0)
+
 async def render(call: CallbackQuery):
     uid = call.from_user.id
-
+    await call.answer()
     language = await lang(uid)
-
     pool = await get_pool()
     pts = await get_points(pool, uid)
+    streak, last_date, total_checkin = await _checkin_summary(pool, uid)
+
+    # 7-day visual: completed days get ✅, the next day gets 🛑,
+    # remaining days are neutral. The reward amount is always shown.
+    rewards = ["0.5", "0.5", "1", "1", "1.5", "2", "3"]
+    icons = []
+    for day, reward in enumerate(rewards, 1):
+        if day <= min(streak, 7):
+            icon = "❇️" if day == 1 else "✅"
+        elif day == min(streak + 1, 7):
+            icon = "🛑"
+        else:
+            icon = "▫️"
+        icons.append(f"{day}. {reward} {icon}")
+    checkin_lines = "  ".join(icons[:4]) + "\n" + "  ".join(icons[4:])
 
     texts = {
         "id": (
-            "⭐ <b>POIN KAMU</b>\n\n"
-            f"Total Poin: <b>{fmt_points(pts)}</b>\n\n"
-            "Poin dipakai untuk membuka code dan mengirim media.\n\n"
-            "📅 Cek In • dapat poin harian\n"
-            "📤 Upload • 50 media = +10 poin, 100 media = +20 poin\n"
-            "📤 Share • tidak dapat poin langsung\n"
-            "👤 Orang membuka code yang kamu share • +1 poin\n"
-            "📦 Buka media FREE • 1.20 poin/media\n"
-            "💰 Code PAID • butuh poin sebesar harga code."
+            "⭐ <b>Poin kamu 💰</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"⭐ Saldo Poin : <b>{fmt_points(pts)}</b>\n\n"
+            "📅 <b>Cek in harian</b>\n"
+            f"{checkin_lines}\n\n"
+            f"📊 Total cek in : <b>{total_checkin} hari</b>\n"
+            f"🔥 Streak saat ini : <b>{streak}/7 hari</b>\n\n"
+            "Gunakan poin untuk membuka media FREE, membuka code berbayar, "
+            "dan mendapatkan akses dari aktivitas di bot."
         ),
-
         "en": (
-            "⭐ <b>YOUR POINTS</b>\n\n"
-            f"Total Points: <b>{fmt_points(pts)}</b>\n\n"
-            "Points are used to open codes and deliver media.\n\n"
-            "📅 Check-in • daily points\n"
-            "📤 Upload • 50 media = +10 points, 100 media = +20 points\n"
-            "📤 Share • no direct reward\n"
-            "👤 Someone opens your shared code • +1 point\n"
-            "📦 FREE media • 1.20 points/media\n"
-            "💰 PAID code • requires points equal to its price."
+            "⭐ <b>Your Points 💰</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"⭐ Point Balance : <b>{fmt_points(pts)}</b>\n\n"
+            "📅 <b>Daily check-in</b>\n"
+            f"{checkin_lines}\n\n"
+            f"📊 Total check-ins : <b>{total_checkin} days</b>\n"
+            f"🔥 Current streak : <b>{streak}/7 days</b>\n\n"
+            "Use points to open FREE media, unlock paid codes, and earn through bot activity."
         ),
-
         "zh": (
-            "⭐ <b>你的积分</b>\n\n"
-            f"总积分：<b>{fmt_points(pts)}</b>\n\n"
-            "积分用于打开代码和发送媒体。\n\n"
-            "📅 签到 • 每日获得积分\n"
-            "📤 上传 • 50 个媒体 = +10 积分，100 个媒体 = +20 积分\n"
-            "📤 分享 • 分享本身不奖励\n"
-            "👤 他人打开你分享的代码 • +1 积分\n"
-            "📦 免费媒体 • 每个媒体消耗 1.20 积分\n"
-            "💰 付费代码 • 需要等于代码价格的积分。"
+            "⭐ <b>你的积分 💰</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"⭐ 积分余额：<b>{fmt_points(pts)}</b>\n\n"
+            "📅 <b>每日签到</b>\n"
+            f"{checkin_lines}\n\n"
+            f"📊 总签到：<b>{total_checkin} 天</b>\n"
+            f"🔥 当前连续：<b>{streak}/7 天</b>\n\n"
+            "积分可用于打开免费媒体、解锁付费代码以及通过机器人活动获得积分。"
         ),
     }
-
     await call.message.edit_text(
         texts.get(language, texts["id"]),
         parse_mode="HTML",
         reply_markup=menu_kb(language),
     )
-
-    await call.answer()
 
 
 # ============================================================
@@ -192,7 +174,46 @@ async def points_menu(call: CallbackQuery):
 
 @router.callback_query(F.data == "points_info")
 async def points_info(call: CallbackQuery):
-    await render(call)
+    language = await lang(call.from_user.id)
+    await call.answer()
+    texts = {
+        "id": (
+            "📖 <b>Kegunaan Poin</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "⭐ <b>1.</b> Buka media FREE → <b>1.20 poin/media</b>\n"
+            "⭐ <b>2.</b> Buka code PAID → poin sesuai harga code\n"
+            "⭐ <b>3.</b> Cek in harian → bonus sampai <b>3 poin</b>\n"
+            "⭐ <b>4.</b> Upload → setiap 50 media selesai = <b>+10 poin</b>\n"
+            "⭐ <b>5.</b> User unik membuka code share kamu → <b>+1 poin</b>\n\n"
+            "💡 <b>Buy Poin</b> memakai pembayaran QR dan setelah pembayaran "
+            "berhasil poin otomatis masuk ke akun."
+        ),
+        "en": (
+            "📖 <b>How Points Work</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "⭐ <b>1.</b> Open FREE media → <b>1.20 points/media</b>\n"
+            "⭐ <b>2.</b> Open PAID code → points equal to the code price\n"
+            "⭐ <b>3.</b> Daily check-in → up to <b>3 points</b>\n"
+            "⭐ <b>4.</b> Upload → every completed 50 media = <b>+10 points</b>\n"
+            "⭐ <b>5.</b> A unique user opening your shared code → <b>+1 point</b>\n\n"
+            "💡 <b>Buy Points</b> uses QR payment and points are credited automatically after payment."
+        ),
+        "zh": (
+            "📖 <b>积分用途</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "⭐ <b>1.</b> 打开免费媒体 → <b>每个 1.20 积分</b>\n"
+            "⭐ <b>2.</b> 打开付费代码 → 消耗等于代码价格的积分\n"
+            "⭐ <b>3.</b> 每日签到 → 最高 <b>3 积分</b>\n"
+            "⭐ <b>4.</b> 上传 → 每完成 50 个媒体 = <b>+10 积分</b>\n"
+            "⭐ <b>5.</b> 独立用户打开你分享的代码 → <b>+1 积分</b>\n\n"
+            "💡 <b>购买积分</b>使用 QR 支付，付款成功后积分自动到账。"
+        ),
+    }
+    await call.message.edit_text(
+        texts.get(language, texts["id"]),
+        parse_mode="HTML",
+        reply_markup=menu_kb(language),
+    )
 
 
 # ============================================================
@@ -242,7 +263,7 @@ async def points_checkin(call: CallbackQuery):
 
         rewards = [
             "0.5",
-            "1",
+            "0.5",
             "1",
             "1",
             "1.5",
@@ -415,9 +436,11 @@ async def points_pkg(call: CallbackQuery):
         create_points_payment,
     )
 
+    price = valid_packages[points]
     return await create_points_payment(
         call,
         points,
+        price,
     )
 
 

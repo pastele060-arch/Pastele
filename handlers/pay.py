@@ -814,19 +814,35 @@ async def database_pool():
 # ============================================================
 # POINT PURCHASE PAYMENT
 # ============================================================
-async def create_points_payment(call: CallbackQuery, points_amount: int):
-    """Central payment entry for point packages."""
+async def create_points_payment(call: CallbackQuery, points_amount: int, price_amount: int | None = None):
+    """Central payment entry for point packages.
+
+    points_amount is the number of points received; price_amount is the
+    actual rupiah amount paid. This fixes the old 20-point -> invalid-package
+    bug where the point quantity was incorrectly treated as the price.
+    """
     points_amount = safe_int(points_amount)
-    if points_amount not in {2000, 5000, 10000, 20000, 50000}:
+    price_amount = safe_int(price_amount if price_amount is not None else points_amount)
+    packages = {
+        20: 2000,
+        100: 5000,
+        200: 10000,
+        400: 20000,
+        1000: 50000,
+    }
+    if points_amount not in packages:
         return await call.answer("❌ Paket poin tidak valid.", show_alert=True)
+    if price_amount != packages[points_amount]:
+        price_amount = packages[points_amount]
+
     lang = await get_user_language(call.from_user.id)
     methods = await payment_methods_enabled()
     labels = {
         "id": ("💳 <b>PEMBAYARAN POIN</b>", "Pilih metode pembayaran untuk membeli poin."),
         "en": ("💳 <b>POINT PAYMENT</b>", "Choose a payment method to buy points."),
-        "zh": ("💳 <b>积分支付</b>", "请选择积分购买方式。"),
+        "zh": ("💳 <b>积分支付</b>", "请选择购买积分的支付方式。"),
     }[lang]
-    rows=[]
+    rows = []
     if methods.get("cashi"):
         rows.append([InlineKeyboardButton(text="📲 QR Otomatis 1 • Cashi", callback_data=f"pointpay:{points_amount}:cashi")])
     if methods.get("bayargg"):
@@ -836,69 +852,124 @@ async def create_points_payment(call: CallbackQuery, points_amount: int):
     if not rows:
         rows.append([InlineKeyboardButton(text="❌ Pembayaran tidak tersedia", callback_data="none")])
     rows.append([InlineKeyboardButton(text={"id":"⬅️ Kembali","en":"⬅️ Back","zh":"⬅️ 返回"}[lang], callback_data="points")])
-    text=f"{labels[0]}\n\n⭐ <b>{points_amount:,}</b> poin\n💰 <b>Rp {points_amount:,}</b>\n\n{labels[1]}".replace(",",".")
-    return await call.message.edit_text(text,parse_mode="HTML",reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    text = (
+        f"{labels[0]}\n\n⭐ <b>{points_amount:,}</b> poin\n"
+        f"💰 <b>Rp {price_amount:,}</b>\n\n{labels[1]}"
+    ).replace(",", ".")
+    return await call.message.edit_text(
+        text, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)
+    )
 
 @router.callback_query(F.data.startswith("pointpay:"))
 async def pointpay_method(call: CallbackQuery):
-    parts=call.data.split(":")
-    if len(parts)!=3:
-        return await call.answer("❌ Data tidak valid.",show_alert=True)
-    amount=safe_int(parts[1]); method=parts[2].lower()
-    if amount not in {2000,5000,10000,20000,50000}:
-        return await call.answer("❌ Paket tidak valid.",show_alert=True)
-    if method=="cashi":
-        return await _create_points_provider(call,amount,"cashi")
-    if method=="bayargg":
-        return await _create_points_provider(call,amount,"bayargg")
-    return await call.answer("❌ Metode tersebut tidak tersedia untuk pembelian poin.",show_alert=True)
+    parts = call.data.split(":")
+    if len(parts) != 3:
+        return await call.answer("❌ Data tidak valid.", show_alert=True)
+    points_amount = safe_int(parts[1])
+    method = parts[2].lower()
+    packages = {20: 2000, 100: 5000, 200: 10000, 400: 20000, 1000: 50000}
+    if points_amount not in packages:
+        return await call.answer("❌ Paket tidak valid.", show_alert=True)
+    if method in {"cashi", "bayargg"}:
+        return await _create_points_provider(
+            call, points_amount, packages[points_amount], method
+        )
+    if method == "manual":
+        return await _create_points_manual(call, points_amount, packages[points_amount])
+    return await call.answer("❌ Metode tersebut tidak tersedia.", show_alert=True)
 
-async def _create_points_provider(call: CallbackQuery, amount: int, provider: str):
-    import uuid, qrcode
-    from io import BytesIO
-    uid=int(call.from_user.id); pool=await database_pool()
-    # One active order per user/provider/package.
-    existing=await pool.fetchrow(
+async def _create_points_provider(call, points_amount: int, price_amount: int, provider: str):
+    import uuid
+    uid = int(call.from_user.id)
+    pool = await database_pool()
+    existing = await pool.fetchrow(
         "SELECT * FROM point_orders WHERE user_id=$1 AND provider=$2 AND status='pending' ORDER BY id DESC LIMIT 1",
-        uid,provider,
+        uid, provider,
     )
-    if existing and int(existing.get("points") or 0)==amount:
-        order_id=str(existing["order_id"]); qr=str(existing.get("qr_url") or "")
-        return await _send_point_qr(call,amount,order_id,qr,provider)
+    if existing and int(existing["points"] or 0) == points_amount:
+        return await _send_point_qr(
+            call, points_amount, price_amount,
+            str(existing["order_id"]), str(existing["qr_url"] or ""), provider
+        )
     try:
-        if provider=="cashi":
-            payment=await Cashi.create_payment(amount=amount,description=f"Buy {amount} points",customer_name=call.from_user.full_name)
+        if provider == "cashi":
+            payment = await Cashi.create_payment(
+                amount=price_amount,
+                description=f"Buy {points_amount} points",
+                customer_name=call.from_user.full_name,
+            )
         else:
-            payment=await BayarGG.create_payment(amount=amount,description=f"Buy {amount} points",customer_name=call.from_user.full_name,payment_method="qris")
+            payment = await BayarGG.create_payment(
+                amount=price_amount,
+                description=f"Buy {points_amount} points",
+                customer_name=call.from_user.full_name,
+                payment_method="qris",
+            )
     except Exception:
-        logger.exception("POINT %s CREATE ERROR",provider.upper())
+        logger.exception("POINT %s CREATE ERROR", provider.upper())
         return await call.message.answer(f"❌ Gagal membuat pembayaran {provider.title()}.")
     if not payment:
         return await call.message.answer(f"❌ Gagal membuat pembayaran {provider.title()}.")
-    order_id=str(payment.get("order_id") or payment.get("invoice_id") or payment.get("payment_id") or f"POINT-{uuid.uuid4().hex[:16].upper()}").strip()
-    qr=str(payment.get("qr_string") or payment.get("qris_string") or payment.get("qr_image") or payment.get("qr_url") or payment.get("qrUrl") or "")
-    expires=payment.get("expires_at")
+    order_id = str(
+        payment.get("order_id") or payment.get("invoice_id")
+        or payment.get("payment_id") or f"POINT-{uuid.uuid4().hex[:16].upper()}"
+    ).strip()
+    qr = str(
+        payment.get("qr_string") or payment.get("qris_string")
+        or payment.get("qr_image") or payment.get("qr_url")
+        or payment.get("qrUrl") or ""
+    )
+    expires = payment.get("expires_at")
     await pool.execute(
         """INSERT INTO point_orders(user_id,points,amount,provider,order_id,status,qr_url,expires_at)
            VALUES($1,$2,$3,$4,$5,'pending',$6,$7)
            ON CONFLICT(order_id) DO NOTHING""",
-        uid,amount,amount,provider,order_id,qr,expires
+        uid, points_amount, price_amount, provider, order_id, qr, expires
     )
-    return await _send_point_qr(call,amount,order_id,qr,provider)
+    return await _send_point_qr(
+        call, points_amount, price_amount, order_id, qr, provider
+    )
 
-async def _send_point_qr(call, amount: int, order_id: str, qr: str, provider: str):
+async def _create_points_manual(call: CallbackQuery, points_amount: int, price_amount: int):
+    """Manual QR uses the same central point order, but no provider API call."""
+    import uuid
+    pool = await database_pool()
+    uid = int(call.from_user.id)
+    order_id = f"POINT-MANUAL-{uuid.uuid4().hex[:16].upper()}"
+    qr = str(MANUAL_QR_FILE_ID or "")
+    await pool.execute(
+        """INSERT INTO point_orders(user_id,points,amount,provider,order_id,status,qr_url)
+           VALUES($1,$2,$3,'manual',$4,'pending',$5)
+           ON CONFLICT(order_id) DO NOTHING""",
+        uid, points_amount, price_amount, order_id, qr
+    )
+    return await _send_point_qr(
+        call, points_amount, price_amount, order_id, qr, "manual"
+    )
+
+async def _send_point_qr(call, points_amount: int, price_amount: int, order_id: str, qr: str, provider: str):
     import qrcode
     from io import BytesIO
     lang=await get_user_language(call.from_user.id)
     name={"cashi":"📲 CASHI","bayargg":"⚡ BAYARGG"}.get(provider,provider.upper())
-    text={"id":f"💳 <b>PEMBELIAN POIN • {name}</b>\n\n⭐ Poin: <b>{amount:,}</b>\n💰 Harga: <b>Rp {amount:,}</b>\n\nScan QR lalu tekan <b>Cek Pembayaran</b>.".replace(",","."),
-          "en":f"💳 <b>POINT PURCHASE • {name}</b>\n\n⭐ Points: <b>{amount:,}</b>\n💰 Price: <b>Rp {amount:,}</b>\n\nScan the QR then press <b>Check Payment</b>.".replace(",","."),
-          "zh":f"💳 <b>购买积分 • {name}</b>\n\n⭐ 积分：<b>{amount:,}</b>\n💰 价格：<b>Rp {amount:,}</b>\n\n请扫描二维码，然后点击<b>检查支付</b>。".replace(",",".")}[lang]
+    text={"id":f"💳 <b>PEMBELIAN POIN • {name}</b>\n\n⭐ Poin: <b>{points_amount:,}</b>\n💰 Harga: <b>Rp {price_amount:,}</b>\n\nScan QR lalu tekan <b>Cek Pembayaran</b>.".replace(",","."),
+          "en":f"💳 <b>POINT PURCHASE • {name}</b>\n\n⭐ Points: <b>{points_amount:,}</b>\n💰 Price: <b>Rp {price_amount:,}</b>\n\nScan the QR then press <b>Check Payment</b>.".replace(",","."),
+          "zh":f"💳 <b>购买积分 • {name}</b>\n\n⭐ 积分：<b>{points_amount:,}</b>\n💰 价格：<b>Rp {price_amount:,}</b>\n\n请扫描二维码，然后点击<b>检查支付</b>。".replace(",",".")}[lang]
     kb=InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text={"id":"🔄 Cek Pembayaran","en":"🔄 Check Payment","zh":"🔄 检查支付"}[lang],callback_data=f"points_check:{order_id}")],
         [InlineKeyboardButton(text={"id":"❌ Tutup","en":"❌ Close","zh":"❌ 关闭"}[lang],callback_data="points")]
     ])
     if qr:
+        # Manual QR stores a Telegram file_id. Send the actual QR image
+        # instead of turning the file_id into a QR payload.
+        if provider == "manual" and not qr.startswith(("http://", "https://", "data:image/")):
+            try:
+                return await call.message.answer_photo(
+                    qr, caption=text, parse_mode="HTML", reply_markup=kb
+                )
+            except Exception:
+                logger.exception("POINT MANUAL QR SEND ERROR")
         if qr.startswith(("http://","https://")):
             try: return await call.message.answer_photo(qr,caption=text,parse_mode="HTML",reply_markup=kb)
             except Exception: logger.exception("POINT QR URL SEND ERROR")

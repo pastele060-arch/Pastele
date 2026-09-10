@@ -161,4 +161,21 @@ async def page_handler(call: CallbackQuery):
 
     _last_page[key] = now
     await call.answer()
+    # Immediate localized loading state masks DB/media lookup latency.
+    try:
+        pool = await get_pool()
+        lang = (await pool.fetchval(
+            "SELECT language FROM users WHERE user_id=$1", call.from_user.id
+        ) or "id")
+    except Exception:
+        lang = "id"
+    loading = {
+        "id": "🔎 <b>Mencari Media Code...</b>\n\n⏳ Mohon tunggu sebentar...",
+        "en": "🔎 <b>Searching Code Media...</b>\n\n⏳ Please wait a moment...",
+        "zh": "🔎 <b>正在查找 Code 媒体...</b>\n\n⏳ 请稍候...",
+    }.get(lang, "🔎 <b>Mencari Media Code...</b>\n\n⏳ Mohon tunggu sebentar...")
+    try:
+        await call.message.edit_text(loading, parse_mode="HTML")
+    except Exception:
+        pass
     await send_page(call.message, code, page_no)

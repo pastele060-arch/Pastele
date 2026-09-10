@@ -124,7 +124,7 @@ async def _send_batch(bot, chat_id, session):
     return sent
 
 
-async def send_all(message, code: str):
+async def send_all(message, code: str, user_id: int | None = None, lang: str | None = None):
     data, medias = await _load(code)
     if not data:
         await message.answer("❌ Code tidak ditemukan.")
