@@ -580,15 +580,8 @@ async def open_file_by_code(
     # FINAL ACCESS
     # ========================================================
 
-    has_access = (
-        owner
-        or bool(access)
-        or bool(creator_access)
-        or user_level in (
-            "vip",
-            "vvip",
-        )
-    )
+    # Single access policy: paid files are never bypassed by VIP/VVIP/Creator.
+    has_access = owner or bool(access)
 
     # ========================================================
     # VIEW COUNT

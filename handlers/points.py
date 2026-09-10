@@ -82,7 +82,13 @@ async def points_check(call):
     await call.answer('⏳ Mengecek...'); order=call.data.split(':',1)[1]; pool=await get_pool(); row=await pool.fetchrow('SELECT * FROM point_orders WHERE order_id=$1 AND user_id=$2',order,call.from_user.id)
     if not row: return await call.message.answer('❌ Order tidak ditemukan.')
     if str(row['status']).lower()=='paid': return await call.message.answer('✅ Poin sudah ditambahkan.')
-    result=await Cashi.check_payment(order); status=str((result or {}).get('status') or '').lower()
+    provider=str(row.get("provider") or "cashi").lower()
+    if provider=="bayargg":
+        from utils.bayargg import BayarGG
+        result=await BayarGG.check_payment(order)
+    else:
+        result=await Cashi.check_payment(order)
+    status=str((result or {}).get('status') or '').lower()
     if status in {'paid','success','settled','completed','completed_payment','success_payment','settlement'}:
         await settle(order); pts=await get_points(pool,call.from_user.id); return await call.message.answer(f'✅ <b>Pembayaran berhasil!</b>\\n\\n⭐ +{fmt_points(row["points"])} poin\\n⭐ Total: <b>{fmt_points(pts)}</b>',parse_mode='HTML')
     return await call.answer('⏳ Belum terkonfirmasi.',show_alert=True)

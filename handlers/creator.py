@@ -227,7 +227,7 @@ async def creator_info(call: CallbackQuery):
             [
                 InlineKeyboardButton(
                     text="💎 Upgrade Creator",
-                    callback_data="creator_upgrade",
+                    callback_data="paycreator",
                 )
             ]
         )
@@ -405,8 +405,8 @@ async def creator_payment_method(call: CallbackQuery):
         return await call.message.edit_text("❌ Pembayaran dibatalkan.")
     if len(parts)!=2: return
     method=parts[1]; lang=await get_user_language(call.from_user.id); methods=await payment_methods_enabled()
-    if method=="qr": return await call.message.edit_reply_markup(reply_markup=qr_selector_markup("creatorpay",lang,methods))
-    if method=="back": return await call.message.edit_reply_markup(reply_markup=payment_selector_markup("creatorpay",lang,methods))
+    if method=="qr": return await call.message.edit_reply_markup(reply_markup=qr_selector_markup("paycreatorpay",lang,methods))
+    if method=="back": return await call.message.edit_reply_markup(reply_markup=payment_selector_markup("paycreatorpay",lang,methods))
     if method=="cashi": return await _creator_auto(call,"cashi")
     if method=="bayargg": return await _creator_auto(call,"bayargg")
     if method=="manual": return await _creator_manual(call)

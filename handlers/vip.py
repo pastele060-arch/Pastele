@@ -150,7 +150,7 @@ def build_vvip(
                 f"💎 {name} • "
                 f"{rupiah(price)}"
             ),
-            callback_data=f"buyvip:{key}",
+            callback_data=f"payvip:{key}",
         )
     kb.button(
         text=(
@@ -543,7 +543,7 @@ async def buy_vip(
     await call.message.edit_text(
         labels.get(lang, labels["id"]) + f"\n\n📦 <b>{safe_html(paket['name'])}</b>\n💰 <b>{rupiah(paket['price'])}</b>",
         parse_mode="HTML",
-        reply_markup=payment_selector_markup(f"vipmethod:{paket_id}", lang, methods),
+        reply_markup=payment_selector_markup(f"payvipmethod:{paket_id}", lang, methods),
     )
 @router.callback_query(F.data.startswith("vipmethod:"))
 async def vip_method(call: CallbackQuery):
@@ -560,7 +560,7 @@ async def vip_method(call: CallbackQuery):
     if method == "qr":
         lang = await get_user_language(call.from_user.id)
         methods = await payment_methods_enabled()
-        return await call.message.edit_reply_markup(reply_markup=qr_selector_markup(f"vipmethod:{paket_id}", lang, methods))
+        return await call.message.edit_reply_markup(reply_markup=qr_selector_markup(f"payvipmethod:{paket_id}", lang, methods))
     if method == "cashi":
         return await _create_cashi_vip(call, paket_id, paket)
     if method == "bayargg":
@@ -569,7 +569,7 @@ async def vip_method(call: CallbackQuery):
         return await create_manual_vip_payment(call, paket_id, paket)
     if method == "back":
         lang = await get_user_language(call.from_user.id)
-        return await call.message.edit_reply_markup(reply_markup=payment_selector_markup(f"vipmethod:{paket_id}", lang, await payment_methods_enabled()))
+        return await call.message.edit_reply_markup(reply_markup=payment_selector_markup(f"payvipmethod:{paket_id}", lang, await payment_methods_enabled()))
 
 async def _create_cashi_vip(call: CallbackQuery, paket_id: str, paket: dict):
     pool = await get_pool()
