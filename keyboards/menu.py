@@ -23,8 +23,10 @@ def home_kb(
     return InlineKeyboardMarkup(inline_keyboard=[
         [_button("📤 Up File" if not zh else "📤 上传文件", callback_data="upfile"),
          _button("📥 Get File" if not zh else "📥 获取文件", callback_data="getfile")],
-        [_button("🛍️ Marketplace" if not zh else "🛍️ 市场", callback_data="marketplace"),
-         _button("👤 Akun" if idn else "👤 Account" if not zh else "👤 账户", callback_data="account")],
+        [_button("⭐ Poin" if idn else "⭐ Points" if not zh else "⭐ 积分", callback_data="points"),
+         _button("🛍️ Marketplace" if not zh else "🛍️ 市场", callback_data="marketplace")],
+        [_button("👤 Akun" if idn else "👤 Account" if not zh else "👤 账户", callback_data="account"),
+         _button("💎 VIP / 🎨 Kreator" if idn else "💎 VIP / 🎨 Creator" if not zh else "💎 VIP / 🎨 创作者", callback_data="vip_creator")],
         [_button("💎 VIP / 🎨 Kreator" if idn else "💎 VIP / 🎨 Creator" if not zh else "💎 VIP / 🎨 创作者", callback_data="vip_creator"),
          _button("📂 Menu Lainnya" if idn else "📂 More Menu" if not zh else "📂 更多菜单", callback_data="menu_lainnya")],
     ])
