@@ -153,7 +153,10 @@ async def _can_open(pool, file, user_id):
     if int(file.get("owner_id") or 0) == int(user_id) or level in ("vip","vvip"):
         return True, level
     paid = await pool.fetchval("""SELECT EXISTS(
-        SELECT 1 FROM file_purchases WHERE user_id=$1 AND file_code=$2 AND status='paid')""",
+        SELECT 1 FROM file_purchases WHERE user_id=$1
+          AND (LOWER(TRIM(COALESCE(file_code, ''))) = LOWER(TRIM($2))
+               OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2)))
+          AND status='paid')""",
         user_id, file["code"])
     creator = await pool.fetchval("""SELECT COALESCE(is_creator,FALSE)
         AND COALESCE(creator_status,'none')='approved' FROM users WHERE user_id=$1""", user_id)

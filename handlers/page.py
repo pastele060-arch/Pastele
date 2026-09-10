@@ -118,7 +118,10 @@ async def send_page(bot, chat_id, user_id, code, page=1):
     owner_access = int(file["owner_id"] or 0) == int(user_id)
     purchase_access = await pool.fetchval(
         """SELECT EXISTS(SELECT 1 FROM file_purchases
-           WHERE user_id=$1 AND file_code=$2 AND status='paid')""",
+           WHERE user_id=$1
+          AND (LOWER(TRIM(COALESCE(file_code, ''))) = LOWER(TRIM($2))
+               OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2)))
+          AND status='paid')""",
         user_id, code) or False
     free_access = await pool.fetchval(
         """SELECT EXISTS(SELECT 1 FROM free_code_progress

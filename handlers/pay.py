@@ -634,7 +634,10 @@ async def get_paid_purchase(
         SELECT *
         FROM file_purchases
         WHERE user_id=$1
-          AND LOWER(TRIM(file_code)) = LOWER(TRIM($2))
+          AND (
+              LOWER(TRIM(COALESCE(file_code, ''))) = LOWER(TRIM($2))
+              OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2))
+          )
           AND status='paid'
         ORDER BY id DESC
         LIMIT 1
@@ -2337,13 +2340,18 @@ async def claim_purchase_paid(
         UPDATE file_purchases
         SET
             status='paid',
+            code=$3,
+            file_code=$3,
             paid_at=COALESCE(
                 paid_at,
                 NOW()
             )
         WHERE id=$1
           AND user_id=$2
-          AND file_code=$3
+          AND (
+              LOWER(TRIM(COALESCE(file_code, ''))) = LOWER(TRIM($3))
+              OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($3))
+          )
           AND status IN ({placeholders})
           AND NOT EXISTS (
               SELECT 1
@@ -2998,9 +3006,13 @@ async def finish_payment(
                 code,
             )
             if paid:
-                return await message.answer(
-                    "✅ Pembayaran sudah diproses sebelumnya."
-                )
+                try:
+                    from handlers.getfile import process_code
+                    await process_code(message, code)
+                    return True
+                except Exception:
+                    logger.exception("REOPEN PAID FILE ERROR | code=%s user=%s", code, user_id)
+                    return False
             return False
         purchase = updated
         # ----------------------------------------------------
@@ -3427,7 +3439,13 @@ async def finish_manual_payment(
                 code,
             )
             if paid:
-                return False
+                try:
+                    from handlers.getfile import process_code
+                    await process_code(message, code)
+                    return True
+                except Exception:
+                    logger.exception("REOPEN MANUAL PAID FILE ERROR | code=%s user=%s", code, user_id)
+                    return False
             logger.warning(
                 (
                     "MANUAL PAYMENT CLAIM LOST "
