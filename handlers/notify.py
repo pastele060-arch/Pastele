@@ -528,12 +528,20 @@ async def notify_text(
         )
 
         if exists:
-            await message.answer(
-                CODE_FOUND_TEXT[lang],
-                parse_mode="HTML",
-                reply_markup=kb_open(code, lang),
-            )
-            return
+            # SINGLE CODE ENTRY POINT:
+            # Every code typed directly in chat must enter the
+            # canonical Get File flow. Do not create a separate
+            # "found code" menu here and do not send media here.
+            try:
+                await message.bot.send_chat_action(
+                    chat_id=message.chat.id,
+                    action=ChatAction.TYPING,
+                )
+            except Exception:
+                pass
+
+            from handlers.getfile import process_code
+            return await process_code(message, code)
 
         await message.answer(
             CODE_NOT_FOUND_TEXT[lang],

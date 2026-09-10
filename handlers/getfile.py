@@ -891,11 +891,12 @@ async def receive_code(
         # OPEN
         # ====================================================
 
-        return await open_file_by_code(
-            message=message,
-            code=code,
-            state=state,
-        )
+        # SINGLE CODE ENTRY POINT:
+        # The FSM only collects the code. The actual lookup/access
+        # logic always goes through process_code(), exactly like
+        # Marketplace, Search, deep-links and successful payments.
+        await state.clear()
+        return await process_code(message, code)
 
 
 # ============================================================
