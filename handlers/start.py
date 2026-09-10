@@ -556,41 +556,41 @@ async def render_home_fast(
     if lang == "en":
         text = (
             "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
-            f"ID: <code>{user_id}</code>\n"
-            f"🎨 Creator: <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n"
-            f"Balance: {balance_text}\n"
-            f"⭐ Points: <b>{points}</b>\n"
-            f"Referrals: <b>{referral}</b>\n"
+            f"🆔 ID : <code>{user_id}</code>\n\n"
+            f"🎨 Status : <b>{'VERIFIED ✅' if is_creator else 'NOT VERIFIED 🔒'}</b>\n\n"
+            f"💰 Balance : {balance_text}\n\n"
+            f"⭐ Points : <b>{points}</b>\n\n"
+            f"👥 Referral : <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
-            "🔗 Referral Link:\n"
+            "🔗 Referral Link :\n"
             f"<code>{ref_link}</code>\n\n"
-            "Use the menu below to upload, buy, sell and manage your Telegram code."
+            "Use the menu below to manage your files and account."
         )
     elif lang == "zh":
         text = (
             "<b>✨ 市场控制面板 ✨</b>\n\n"
-            f"ID：<code>{user_id}</code>\n"
-            f"🎨 创作者：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n"
-            f"余额：{balance_text}\n"
-            f"⭐ 积分：<b>{points}</b>\n"
-            f"推荐人数：<b>{referral}</b>\n"
+            f"🆔 ID：<code>{user_id}</code>\n\n"
+            f"🎨 状态：<b>{'已认证 ✅' if is_creator else '未认证 🔒'}</b>\n\n"
+            f"💰 余额：{balance_text}\n\n"
+            f"⭐ 积分：<b>{points}</b>\n\n"
+            f"👥 推荐：<b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 推荐链接：\n"
             f"<code>{ref_link}</code>\n\n"
-            "使用下方菜单上传、购买、出售和管理 Telegram 代码。"
+            "使用下方菜单管理文件和账户。"
         )
     else:
         text = (
             "<b>✨ MARKET DASHBOARD ✨</b>\n\n"
-            f"ID : <code>{user_id}</code>\n"
-            f"{creator_text}\n"
-            f"Saldo : {balance_text}\n"
-            f"⭐ Poin : <b>{points}</b>\n"
-            f"Referral : <b>{referral}</b>\n"
+            f"🆔 ID : <code>{user_id}</code>\n\n"
+            f"🎨 Status : <b>{'TERVERIFIKASI ✅' if is_creator else 'BELUM TERVERIFIKASI 🔒'}</b>\n\n"
+            f"💰 Saldo : {balance_text}\n\n"
+            f"⭐ Poin : <b>{points}</b>\n\n"
+            f"👥 Referral : <b>{referral}</b>\n"
             "━━━━━━━━━━━━━━\n"
             "🔗 Link Referral :\n"
             f"<code>{ref_link}</code>\n\n"
-            "Gunakan menu di bawah untuk upload, jual, beli, dan mengelola code Telegram."
+            "Gunakan menu di bawah untuk mengelola file dan akun."
         )
 
     # =====================================================

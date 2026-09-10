@@ -796,6 +796,56 @@ async def database_pool():
     return await get_pool()
 
 # ============================================================
+# POINT PURCHASE PAYMENT
+# ============================================================
+async def create_points_payment(call: CallbackQuery, points_amount: int):
+    """Create and persist a Cashi QR point order using the central pay module."""
+    import uuid
+    import qrcode
+    from io import BytesIO
+    points_amount=int(points_amount)
+    packages={2000,5000,10000,20000,50000}
+    if points_amount not in packages:
+        return await call.answer("❌ Paket poin tidak valid.",show_alert=True)
+    try: await call.answer("⏳ Membuat QR pembayaran...")
+    except Exception: pass
+    uid=int(call.from_user.id); amount=points_amount
+    fallback=f"POINT-{uuid.uuid4().hex[:16].upper()}"
+    try:
+        payment=await Cashi.create_payment(amount=amount,description=f"Buy {points_amount} points",customer_name=call.from_user.full_name)
+    except Exception:
+        logger.exception("POINT CASHI CREATE ERROR | user=%s",uid)
+        return await call.message.answer("❌ Gagal membuat pembayaran Cashi.")
+    if not payment: return await call.message.answer("❌ Gagal membuat pembayaran Cashi.")
+    order_id=str(payment.get("order_id") or payment.get("payment_id") or fallback).strip()
+    qr=payment.get("qr_string") or payment.get("qris_string") or payment.get("qr_image") or payment.get("qrUrl") or payment.get("qr_url")
+    expires=extract_cashi_expires_at(payment)
+    try:
+        pool=await database_pool()
+        await pool.execute("""INSERT INTO point_orders(user_id,points,amount,provider,order_id,status,qr_url,expires_at) VALUES($1,$2,$3,'cashi',$4,'pending',$5,$6) ON CONFLICT(order_id) DO NOTHING""",uid,points_amount,amount,order_id,str(qr or ''),expires)
+    except Exception:
+        logger.exception("POINT ORDER INSERT ERROR | order=%s",order_id)
+        return await call.message.answer("❌ Gagal menyimpan order poin.")
+    lang=await get_user_language(uid)
+    L={
+      'id':('💳 <b>PEMBELIAN POIN</b>','⭐ Poin','💰 Harga','Scan QR pembayaran di bawah.','🔄 Cek Pembayaran','❌ Tutup'),
+      'en':('💳 <b>POINT PURCHASE</b>','⭐ Points','💰 Price','Scan the QR payment below.','🔄 Check Payment','❌ Close'),
+      'zh':('💳 <b>购买积分</b>','⭐ 积分','💰 价格','请扫描下方支付二维码。','🔄 检查支付','❌ 关闭'),
+    }.get(lang,None) or ('💳 <b>PEMBELIAN POIN</b>','⭐ Poin','💰 Harga','Scan QR pembayaran di bawah.','🔄 Cek Pembayaran','❌ Tutup')
+    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=L[4],callback_data=f'points_check:{order_id}')],[InlineKeyboardButton(text=L[5],callback_data='points')]])
+    caption=f"{L[0]}\n\n{L[1]} : <b>{points_amount:,}</b>\n{L[2]} : <b>Rp {amount:,}</b>\n\n{L[3]}".replace(',','.')
+    if qr and str(qr).startswith(('http://','https://')):
+        try:
+            await call.message.answer_photo(str(qr),caption=caption,parse_mode='HTML',reply_markup=kb); return
+        except Exception: logger.exception('POINT QR URL SEND ERROR')
+    if qr:
+        try:
+            img=qrcode.make(str(qr)); buf=BytesIO(); img.save(buf,'PNG'); buf.seek(0)
+            await call.message.answer_photo(BufferedInputFile(buf.getvalue(),'point_payment_qr.png'),caption=caption,parse_mode='HTML',reply_markup=kb); return
+        except Exception: logger.exception('POINT QR IMAGE ERROR')
+    await call.message.answer(f"{caption}\n\n🧾 Order: <code>{html.escape(order_id)}</code>",parse_mode='HTML',reply_markup=kb)
+
+# ============================================================
 # PAYMENT ENTRY
 # ============================================================
 @router.callback_query(

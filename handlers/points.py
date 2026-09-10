@@ -5,9 +5,6 @@ from aiogram import Router, F
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from database import get_pool
 from utils.points import get_points, checkin, fmt_points
-from utils.cashi import Cashi
-import qrcode
-from io import BytesIO
 
 router=Router(); logger=logging.getLogger(__name__)
 PACKAGES=[(2000,2000),(5000,5000),(10000,10000),(20000,20000),(50000,50000)]
@@ -44,32 +41,26 @@ async def points_checkin(call):
 
 @router.callback_query(F.data=='points_buy')
 async def points_buy(call):
-    l=await lang(call.from_user.id); labels={'id':'💳 <b>BUY POIN</b>\\n\\nPilih jumlah poin:', 'en':'💳 <b>BUY POINTS</b>\\n\\nChoose points:', 'zh':'💳 <b>购买积分</b>\\n\\n选择积分数量：'}
+    l=await lang(call.from_user.id)
+    title={'id':'💳 <b>BUY POIN</b>','en':'💳 <b>BUY POINTS</b>','zh':'💳 <b>购买积分</b>'}[l]
+    desc={'id':'Pilih paket poin yang kamu butuhkan.','en':'Choose the points package you need.','zh':'选择需要的积分套餐。'}[l]
+    one={'id':'1 poin = Rp1','en':'1 point = Rp1','zh':'1 积分 = Rp1'}[l]
+    back={'id':'⬅️ Kembali','en':'⬅️ Back','zh':'⬅️ 返回'}[l]
     rows=[]
-    for pts,amt in PACKAGES: rows.append([InlineKeyboardButton(text=f'{pts:,} poin • Rp {amt:,}'.replace(',','.'),callback_data=f'points_pkg:{pts}')])
-    rows.append([InlineKeyboardButton(text='⬅️ Kembali' if l=='id' else '⬅️ Back' if l=='en' else '⬅️ 返回',callback_data='points')])
-    await call.message.edit_text(labels[l],parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows)); await call.answer()
+    for pts,amt in PACKAGES:
+        unit={'id':'Poin','en':'Points','zh':'积分'}[l]
+        rows.append([InlineKeyboardButton(text=f'⭐ {pts:,} {unit}  •  Rp {amt:,}'.replace(',','.'),callback_data=f'points_pkg:{pts}')])
+    rows.append([InlineKeyboardButton(text=back,callback_data='points')])
+    await call.message.edit_text(f'{title}\n\n{desc}\n\n<b>{one}</b>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await call.answer()
 
 @router.callback_query(F.data.startswith('points_pkg:'))
 async def points_pkg(call):
-    await call.answer('⏳ Membuat QR...'); pts=int(call.data.split(':',1)[1]); amount=pts
-    uid=call.from_user.id; pool=await get_pool(); l=await lang(uid)
-    if pts not in dict(PACKAGES): return await call.message.answer('❌ Paket tidak valid.')
-    order=f'POINT-{uuid.uuid4().hex[:16]}'
-    payment=await Cashi.create_payment(amount=amount,description=f'Buy {pts} points',customer_name=call.from_user.full_name)
-    if not payment: return await call.message.answer('❌ Gagal membuat pembayaran Cashi.')
-    provider_order=str(payment.get('order_id') or payment.get('payment_id') or order)
-    qr=payment.get('qr_string') or payment.get('qr_image') or payment.get('qrUrl')
-    expires=Cashi._parse_datetime(payment.get('expires_at'))
-    await pool.execute('INSERT INTO point_orders(user_id,points,amount,provider,order_id,status,qr_url,expires_at) VALUES($1,$2,$3,\'cashi\',$4,\'pending\',$5,$6)',uid,pts,amount,provider_order,qr,expires)
-    kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🔄 Cek Pembayaran',callback_data=f'points_check:{provider_order}')],[InlineKeyboardButton(text='❌ Tutup',callback_data='points')]])
-    if qr and str(qr).startswith(('http://','https://')):
-        await call.message.answer_photo(qr,caption=f'💳 <b>BUY POINTS</b>\\n\\n⭐ {pts:,} poin\\n💰 Rp {amount:,}\\n\\nScan QR lalu cek pembayaran.',parse_mode='HTML',reply_markup=kb)
-    else:
-        try:
-            img=qrcode.make(qr); b=BytesIO(); img.save(b,'PNG'); b.seek(0)
-            await call.message.answer_photo(BufferedInputFile(b.getvalue(),'points_qr.png'),caption=f'💳 <b>BUY POINTS</b>\\n\\n⭐ {pts:,} poin\\n💰 Rp {amount:,}',parse_mode='HTML',reply_markup=kb)
-        except Exception: await call.message.answer(f'💳 Order: <code>{provider_order}</code>',parse_mode='HTML',reply_markup=kb)
+    try: pts=int(call.data.split(':',1)[1])
+    except ValueError: return await call.answer('❌ Invalid package.',show_alert=True)
+    if pts not in dict(PACKAGES): return await call.answer('❌ Paket tidak valid.',show_alert=True)
+    from handlers.pay import create_points_payment
+    return await create_points_payment(call,pts)
 
 async def settle(order_id:str):
     pool=await get_pool()
