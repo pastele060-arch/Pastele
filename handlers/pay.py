@@ -751,6 +751,20 @@ async def show_payment_loading(
 # ============================================================
 # PAYMENT KEYBOARD
 # ============================================================
+def paid_unlock_keyboard(code: str, lang: str = "id"):
+    labels={
+        "id": ("💳 Bayar", "⭐ Gunakan Poin"),
+        "en": ("💳 Pay", "⭐ Use Points"),
+        "zh": ("💳 支付", "⭐ 使用积分"),
+    }
+    pay_label, point_label = labels.get(lang, labels["id"])
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=pay_label, callback_data=f"pay:{code}")],
+        [InlineKeyboardButton(text=point_label, callback_data=f"paidpoint:{code}")],
+        [InlineKeyboardButton(text={"id":"❌ Batal","en":"❌ Cancel","zh":"❌ 取消"}.get(lang,"❌ Batal"), callback_data="close")],
+    ])
+
+
 async def payment_method_keyboard(code: str, user_id: int | None = None):
     """Build payment methods from DB settings so admin can enable/disable them live."""
     lang = await get_user_language(user_id) if user_id else "id"

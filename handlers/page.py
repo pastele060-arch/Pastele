@@ -123,18 +123,17 @@ async def send_page(bot, chat_id, user_id, code, page=1):
                OR LOWER(TRIM(COALESCE(code, ''))) = LOWER(TRIM($2)))
           AND status='paid')""",
         user_id, code) or False
-    privileged = bool(owner_access or purchase_access or creator_access or
-                      user_level in ("vip", "vvip"))
-
-    # Paid purchase also requires point balance equal to the code price.
-    if purchase_access and not owner_access and not creator_access and user_level not in ("vip", "vvip"):
-        from utils.points import unlock_paid_code, get_points, fmt_points
-        unlocked = await pool.fetchval("SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(code)=LOWER($2) LIMIT 1", user_id, file["code"])
-        if not unlocked:
-            ok, pts = await unlock_paid_code(pool,user_id,file["code"],int(file.get("price") or 0))
-            if not ok:
-                await bot.send_message(chat_id, f"⭐ <b>POIN TIDAK CUKUP</b>\n\nButuh <b>{fmt_points(file.get('price') or 0)} poin</b>.\nPoin kamu: <b>{fmt_points(pts)}</b>.", parse_mode="HTML")
-                return False
+    point_unlock_access = bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(TRIM(code))=LOWER(TRIM($2)))", user_id, file["code"]))
+    if bool(file["is_paid"]):
+        privileged = bool(owner_access or purchase_access or point_unlock_access)
+        if not privileged:
+            from handlers.pay import paid_unlock_keyboard
+            lang=await get_user_language(user_id); price=int(file.get("price") or 0)
+            text={"id":f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Harga: <b>Rp {price:,}</b>\n\nPilih cara membuka file:","en":f"🔒 <b>PAID FILE</b>\n\n🔑 CODE: <code>{code}</code>\n💰 Price: <b>Rp {price:,}</b>\n\nChoose how to unlock this file:","zh":f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{code}</code>\n💰 价格：<b>Rp {price:,}</b>\n\n请选择解锁方式："}
+            await bot.send_message(chat_id,text.get(lang,text["id"]),parse_mode="HTML",reply_markup=paid_unlock_keyboard(code,lang))
+            return False
+    else:
+        privileged = bool(owner_access or creator_access or user_level in ("vip", "vvip"))
 
     # FREE files consume 1.20 points per successfully opened media.
     # Require enough points for the whole page before sending the album.

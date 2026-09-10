@@ -57,7 +57,19 @@ async def send_all(bot, chat_id, code, file, user_level, offset=0, status_messag
 
     # FREE files consume 1.20 points per media. Charge the batch atomically
     # before sending to avoid races when users press Continue quickly.
-    privileged_user = int(file.get("owner_id") or 0) == int(chat_id) or user_level in ("vip", "vvip")
+    owner_access = int(file.get("owner_id") or 0) == int(chat_id)
+    pool = await _get_pool()
+    paid_access = bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM file_purchases WHERE user_id=$1 AND (LOWER(TRIM(COALESCE(file_code,'')))=LOWER(TRIM($2)) OR LOWER(TRIM(COALESCE(code,'')))=LOWER(TRIM($2))) AND status='paid')",chat_id,code))
+    point_unlock_access = bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(TRIM(code))=LOWER(TRIM($2)))",chat_id,code))
+    if bool(file.get("is_paid")):
+        privileged_user = owner_access or paid_access or point_unlock_access
+        if not privileged_user:
+            from handlers.pay import paid_unlock_keyboard
+            lang=await get_user_language(chat_id); price=int(file.get("price") or 0)
+            text={"id":f"🔒 <b>FILE BERBAYAR</b>\n\n💰 Harga: <b>Rp {price:,}</b>\n\nPilih cara membuka file:","en":f"🔒 <b>PAID FILE</b>\n\n💰 Price: <b>Rp {price:,}</b>\n\nChoose how to unlock this file:","zh":f"🔒 <b>付费文件</b>\n\n💰 价格：<b>Rp {price:,}</b>\n\n请选择解锁方式："}
+            await bot.send_message(chat_id,text.get(lang,text["id"]),parse_mode="HTML",reply_markup=paid_unlock_keyboard(code,lang)); return False
+    else:
+        privileged_user = owner_access or user_level in ("vip", "vvip")
     if not bool(file.get("is_paid")) and not privileged_user:
         charge_count = len([x for x in batch if isinstance(x, dict) and x.get("file_id")])
         if charge_count:

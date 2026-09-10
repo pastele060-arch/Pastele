@@ -653,42 +653,46 @@ async def open_file_by_code(
     await state.clear()
 
     # ========================================================
-    # POINT ECONOMY GATE
+    # ACCESS / POINT GATE
     # ========================================================
-    # FREE: user must have at least media_count points to enter the code.
-    # Paid: money purchase grants access, but the code price is also charged
-    # once in points before the Open Menu is shown.
-    if not owner and not bool(creator_access) and user_level not in ("vip", "vvip"):
-        from utils.points import get_points, unlock_paid_code, fmt_points
+    # FREE: entry requires media_count points.
+    # PAID: user must either have a paid purchase OR explicitly unlock
+    # with points. Payment and points are two separate unlock methods.
+    lang = await get_user_language(message.from_user.id)
+
+    if is_paid and not owner:
+        paid_purchase = bool(access)
+        point_unlocked = False
+        try:
+            point_unlocked = bool(await pool.fetchval(
+                """SELECT EXISTS(SELECT 1 FROM point_code_unlocks
+                   WHERE user_id=$1 AND LOWER(TRIM(code))=LOWER(TRIM($2)))""",
+                message.from_user.id, file["code"]
+            ))
+        except Exception:
+            logger.exception("PAID POINT UNLOCK CHECK ERROR | code=%s", file["code"])
+
+        if not paid_purchase and not point_unlocked:
+            from handlers.pay import paid_unlock_keyboard
+            txt = {
+                "id": f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{file['code']}</code>\n💰 Harga: <b>Rp {int(price):,}</b>\n📦 Media: <b>{len(media)}</b>\n\nPilih cara membuka file:",
+                "en": f"🔒 <b>PAID FILE</b>\n\n🔑 CODE: <code>{file['code']}</code>\n💰 Price: <b>Rp {int(price):,}</b>\n📦 Media: <b>{len(media)}</b>\n\nChoose how to unlock this file:",
+                "zh": f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{file['code']}</code>\n💰 价格：<b>Rp {int(price):,}</b>\n📦 媒体：<b>{len(media)}</b>\n\n请选择解锁方式：",
+            }
+            return await message.answer(txt.get(lang, txt["id"]), parse_mode="HTML", reply_markup=paid_unlock_keyboard(file["code"], lang))
+
+    elif not is_paid and not owner and not bool(creator_access) and user_level not in ("vip", "vvip"):
+        from utils.points import get_points, fmt_points
         points = await get_points(pool, message.from_user.id)
-        if is_paid:
-            if not has_access:
-                pass  # handled by the paid-file screen below
-            else:
-                already = await pool.fetchval("SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(code)=LOWER($2) LIMIT 1", message.from_user.id, file["code"])
-                if not already:
-                    ok, points = await unlock_paid_code(pool, message.from_user.id, file["code"], int(price))
-                    if not ok:
-                        lang = await get_user_language(message.from_user.id)
-                        need = fmt_points(price)
-                        txt = {
-                            "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini membutuhkan <b>{need} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.\n\nSilakan kumpulkan atau beli poin terlebih dahulu.",
-                            "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code requires <b>{need} points</b>.\nYour points: <b>{fmt_points(points)}</b>.\n\nEarn or buy points first.",
-                            "zh": f"⭐ <b>积分不足</b>\n\n此代码需要 <b>{need} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。\n\n请先赚取或购买积分。",
-                        }
-                        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐ Cek Poin" if lang=="id" else "⭐ Points" if lang=="en" else "⭐ 积分",callback_data="points")]])
-                        return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
-        else:
-            required = max(0, int(len(media)))
-            if points < required:
-                lang = await get_user_language(message.from_user.id)
-                txt={
-                    "id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini berisi <b>{required} media</b> dan membutuhkan minimal <b>{required} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.\n\nKumpulkan poin lewat Cek In, upload media, atau Buy Poin.",
-                    "en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code contains <b>{required} media</b> and requires at least <b>{required} points</b>.\nYour points: <b>{fmt_points(points)}</b>.\n\nEarn points by check-in, uploading media, or buying points.",
-                    "zh":f"⭐ <b>积分不足</b>\n\n此代码包含 <b>{required} 个媒体</b>，至少需要 <b>{required} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。\n\n可通过签到、上传媒体或购买积分获得。",
-                }
-                kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐ Cek Poin" if lang=="id" else "⭐ Points" if lang=="en" else "⭐ 积分",callback_data="points")]])
-                return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
+        required = len(media)
+        if points < required:
+            txt={
+                "id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini berisi <b>{required} media</b> dan membutuhkan minimal <b>{required} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.\n\nKumpulkan poin lewat Cek In, upload media, atau Buy Poin.",
+                "en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code contains <b>{required} media</b> and requires at least <b>{required} points</b>.\nYour points: <b>{fmt_points(points)}</b>.\n\nEarn points by check-in, uploading media, or buying points.",
+                "zh":f"⭐ <b>积分不足</b>\n\n此代码包含 <b>{required} 个媒体</b>，至少需要 <b>{required} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。",
+            }
+            kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={"id":"⭐ Cek Poin","en":"⭐ Points","zh":"⭐ 积分"}.get(lang,"⭐ Cek Poin"),callback_data="points")]])
+            return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
 
     # ========================================================
     # OPEN FILE
@@ -722,6 +726,33 @@ async def open_file_by_code(
 
 
 # ============================================================
+@router.callback_query(F.data.startswith("paidpoint:"))
+async def paid_point_unlock(call: CallbackQuery):
+    code=normalize_code(call.data.split(":",1)[1])
+    pool=await get_pool()
+    file=await pool.fetchrow("SELECT * FROM files WHERE LOWER(TRIM(code))=LOWER(TRIM($1)) LIMIT 1",code)
+    if not file: return await call.answer("❌ Code tidak ditemukan.", show_alert=True)
+    if not bool(file.get("is_paid")): return await call.answer("❌ Code ini gratis.", show_alert=True)
+    user_id=int(call.from_user.id)
+    if int(file.get("owner_id") or 0)==user_id: return await call.answer("✅ Kamu adalah pemilik file.", show_alert=False)
+    paid=bool(await pool.fetchval("SELECT EXISTS(SELECT 1 FROM file_purchases WHERE user_id=$1 AND (LOWER(TRIM(COALESCE(file_code,'')))=LOWER(TRIM($2)) OR LOWER(TRIM(COALESCE(code,'')))=LOWER(TRIM($2))) AND status='paid')",user_id,file["code"]))
+    if paid: return await call.answer("✅ File sudah dibuka.", show_alert=False)
+    from utils.points import unlock_paid_code, fmt_points
+    price=int(file.get("price") or 0); ok,balance=await unlock_paid_code(pool,user_id,file["code"],price)
+    lang=await get_user_language(user_id)
+    if not ok:
+        text={"id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nDibutuhkan: <b>{fmt_points(price)} poin</b>\nPoin kamu: <b>{fmt_points(balance)}</b>","en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nRequired: <b>{fmt_points(price)} points</b>\nYour points: <b>{fmt_points(balance)}</b>","zh":f"⭐ <b>积分不足</b>\n\n需要：<b>{fmt_points(price)} 积分</b>\n你的积分：<b>{fmt_points(balance)}</b>"}
+        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={"id":"⭐ Buy Poin","en":"⭐ Buy Points","zh":"⭐ 购买积分"}.get(lang,"⭐ Buy Poin"),callback_data="points")],[InlineKeyboardButton(text={"id":"💳 Bayar","en":"💳 Pay","zh":"💳 支付"}.get(lang,"💳 Bayar"),callback_data=f"pay:{file['code']}")]])
+        return await call.message.answer(text.get(lang,text["id"]),parse_mode="HTML",reply_markup=kb)
+    await call.answer("✅ Unlock berhasil!", show_alert=False)
+    from handlers.open_menu import open_keyboard
+    title=str(file.get("title") or "Tanpa Judul")
+    try:
+        media=file.get("media"); media=json.loads(media) if isinstance(media,str) else media; count=len(media or [])
+    except Exception: count=int(file.get("media_count") or 0)
+    txt={"id":f"✅ <b>FILE DITEMUKAN</b>\n\n📝 Judul: <b>{title}</b>\n📦 Total Media: <b>{count}</b>\n\nPilih metode pengiriman:","en":f"✅ <b>FILE FOUND</b>\n\n📝 Title: <b>{title}</b>\n📦 Total Media: <b>{count}</b>\n\nChoose a delivery method:","zh":f"✅ <b>找到文件</b>\n\n📝 标题：<b>{title}</b>\n📦 媒体总数：<b>{count}</b>\n\n请选择发送方式："}
+    return await call.message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=open_keyboard(file["code"],lang))
+
 # PROCESS CODE
 # ============================================================
 
