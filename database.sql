@@ -740,7 +740,7 @@ WHERE search_text IS NULL OR search_text='';
 -- ============================================================
 -- POINT ECONOMY (REAL / ATOMIC)
 -- 1 point = Rp1.00 for purchases. Media delivery costs 1.20 points.
--- Upload costs 1 point/media for FREE users and returns 20% as reward.
+-- Uploading FREE media does NOT consume points. Reward: 50 media = +10, 100 media = +20.
 -- ============================================================
 ALTER TABLE users ADD COLUMN IF NOT EXISTS points NUMERIC(18,2) NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS checkin_streak INT NOT NULL DEFAULT 0;
@@ -815,30 +815,41 @@ CREATE INDEX IF NOT EXISTS idx_point_orders_order ON point_orders(order_id);
 CREATE OR REPLACE FUNCTION public.add_points(
     p_user_id BIGINT, p_amount NUMERIC, p_type TEXT, p_reference TEXT, p_description TEXT DEFAULT NULL
 ) RETURNS NUMERIC AS $$
-DECLARE v_balance NUMERIC(18,2);
+DECLARE
+    v_balance NUMERIC(18,2);
     v_existing NUMERIC(18,2);
+    v_inserted BIGINT;
 BEGIN
-    SELECT balance_after INTO v_existing FROM point_transactions WHERE reference=p_reference LIMIT 1;
+    -- Serialize identical references so webhook/callback retries can never
+    -- credit or debit the same transaction twice.
+    PERFORM pg_advisory_xact_lock(hashtextextended(COALESCE(p_reference,''), 0));
+
+    SELECT balance_after INTO v_existing
+      FROM point_transactions
+     WHERE reference=p_reference
+     LIMIT 1;
     IF FOUND THEN RETURN v_existing; END IF;
-    IF p_amount = 0 THEN
-        SELECT points INTO v_balance FROM users WHERE user_id=p_user_id FOR UPDATE;
-        IF v_balance IS NULL THEN RAISE EXCEPTION 'user_not_found'; END IF;
-        RETURN v_balance;
-    END IF;
-    PERFORM 1 FROM users WHERE user_id=p_user_id FOR UPDATE;
+
+    SELECT points INTO v_balance
+      FROM users
+     WHERE user_id=p_user_id
+     FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'user_not_found'; END IF;
+
     IF p_amount < 0 THEN
-        UPDATE users SET points=points+p_amount, updated_at=NOW()
-        WHERE user_id=p_user_id AND points+p_amount >= 0
-        RETURNING points INTO v_balance;
-        IF NOT FOUND THEN RAISE EXCEPTION 'insufficient_points'; END IF;
-    ELSE
-        UPDATE users SET points=points+p_amount, updated_at=NOW()
-        WHERE user_id=p_user_id RETURNING points INTO v_balance;
+        IF v_balance + p_amount < 0 THEN
+            RAISE EXCEPTION 'insufficient_points';
+        END IF;
     END IF;
+
+    UPDATE users
+       SET points = points + p_amount, updated_at=NOW()
+     WHERE user_id=p_user_id
+     RETURNING points INTO v_balance;
+
     INSERT INTO point_transactions(user_id,amount,balance_after,type,reference,description)
-    VALUES(p_user_id,p_amount,v_balance,p_type,p_reference,p_description)
-    ON CONFLICT(reference) DO NOTHING;
+    VALUES(p_user_id,p_amount,v_balance,p_type,p_reference,p_description);
+
     RETURN v_balance;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
