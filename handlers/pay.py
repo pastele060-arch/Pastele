@@ -793,9 +793,9 @@ async def payment_method_keyboard(code: str, user_id: int | None = None):
     # Binance/USDT is handled manually by the owner via Telegram @ownergbot.
     binance_on = await setting("payment_binance_enabled", "off")
     L={
-      "id":("💳 Pembayaran", "📲 QR Otomatis 1 • Cashi", "⚡ QR Otomatis 2 • BayarGG", "📷 QR Manual", "₿ Binance / USDT", "❌ Batal", "❌ Pembayaran Tidak Tersedia"),
-      "en":("💳 Payment", "📲 Automatic QR 1 • Cashi", "⚡ Automatic QR 2 • BayarGG", "📷 Manual QR", "₿ Binance / USDT", "❌ Cancel", "❌ Payment Unavailable"),
-      "zh":("💳 支付", "📲 自动二维码 1 • Cashi", "⚡ 自动二维码 2 • BayarGG", "📷 手动二维码", "₿ Binance / USDT", "❌ 取消", "❌ 暂无可用支付方式")
+      "id":("💳 Pembayaran", "📲 QR Otomatis 1 ", "⚡ QR Otomatis 2 ", "📷 QR Manual", "₿ Binance / USDT", "❌ Batal", "❌ Pembayaran Tidak Tersedia"),
+      "en":("💳 Payment", "📲 Automatic QR 1 ", "⚡ Automatic QR 2 ", "📷 Manual QR", "₿ Binance / USDT", "❌ Cancel", "❌ Payment Unavailable"),
+      "zh":("💳 支付", "📲 自动二维码 1 ", "⚡ 自动二维码 2 ", "📷 手动二维码", "₿ Binance / USDT", "❌ 取消", "❌ 暂无可用支付方式")
     }[lang]
     buttons=[]
     if cashi_on: buttons.append([InlineKeyboardButton(text=L[1], callback_data=f"cashi:{code}")])
@@ -1037,8 +1037,8 @@ async def paycreator_method_bridge(call: CallbackQuery):
 def _product_method_rows(lang: str, prefix: str, methods: dict):
     rows = []
     labels = {
-        "cashi": {"id":"📲 QR Otomatis 1 • Cashi","en":"📲 Automatic QR 1 • Cashi","zh":"📲 自动二维码 1 • Cashi"},
-        "bayargg": {"id":"⚡ QR Otomatis 2 • BayarGG","en":"⚡ Automatic QR 2 • BayarGG","zh":"⚡ 自动二维码 2 • BayarGG"},
+        "cashi": {"id":"📲 QR Otomatis 1 ","en":"📲 Automatic QR 1 ","zh":"📲 自动二维码 1 "},
+        "bayargg": {"id":"⚡ QR Otomatis 2 ","en":"⚡ Automatic QR 2 ","zh":"⚡ 自动二维码 2 "},
         "manual": {"id":"📷 QR Manual","en":"📷 Manual QR","zh":"📷 手动二维码"},
     }
     for method in ("cashi","bayargg","manual"):
@@ -3288,8 +3288,7 @@ async def complete_success_side_effects(
                     f"👤 User: "
                     f"<code>{masked}</code>\n"
                     f"💰 Harga: "
-                    f"<b>{format_rupiah(purchase.get('paid_price'))}</b>\n"
-                    f"💳 Payment: <b>{payment_name}</b>"
+                    f"<b>{format_rupiah(purchase.get('paid_price'))}</b>"
                 ),
                 parse_mode="HTML",
                 reply_markup=keyboard,
