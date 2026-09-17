@@ -355,15 +355,18 @@ async def copy_to_storage(
     bot,
     from_chat_id: int,
     message_id: int,
+    *,
+    file_id: Optional[str] = None,
+    file_type: Optional[str] = None,
 ):
     """
-    Copy media ke storage channel.
+    Store media ke storage channel.
 
-    Penting:
-    - Maksimal STORAGE_CONCURRENCY proses bersamaan.
-    - User berbeda tidak saling memblokir.
-    - TelegramRetryAfter ditangani otomatis.
-    - Tidak menggunakan gather untuk 200 media.
+    Prefer file_id + file_type when available. This avoids the fragile
+    copyMessage path for media collected in a user's private chat and fixes
+    TelegramBadRequest: MEDIA_FILE_INVALID during FREE -> PAID migration.
+
+    message_id/from_chat_id remain supported as a fallback for older callers.
     """
 
     global _storage_ready
@@ -398,15 +401,38 @@ async def copy_to_storage(
         retries = 0
         while True:
             try:
-                try:
-                    await bot.send_chat_action(chat_id=from_chat_id, action="typing")
-                except Exception:
-                    pass
-                copied = await bot.copy_message(
-                    chat_id=STORAGE_CHANNEL_ID,
-                    from_chat_id=from_chat_id,
-                    message_id=message_id,
-                )
+                # Prefer the original Telegram file_id. Re-sending the file_id
+                # is more reliable than copy_message when the source is a
+                # private-chat message and prevents MEDIA_FILE_INVALID.
+                if file_id:
+                    if file_type == "photo":
+                        copied = await bot.send_photo(
+                            chat_id=STORAGE_CHANNEL_ID,
+                            photo=file_id,
+                        )
+                    elif file_type == "video":
+                        copied = await bot.send_video(
+                            chat_id=STORAGE_CHANNEL_ID,
+                            video=file_id,
+                        )
+                    elif file_type == "document":
+                        copied = await bot.send_document(
+                            chat_id=STORAGE_CHANNEL_ID,
+                            document=file_id,
+                        )
+                    else:
+                        copied = await bot.copy_message(
+                            chat_id=STORAGE_CHANNEL_ID,
+                            from_chat_id=from_chat_id,
+                            message_id=message_id,
+                        )
+                else:
+                    copied = await bot.copy_message(
+                        chat_id=STORAGE_CHANNEL_ID,
+                        from_chat_id=from_chat_id,
+                        message_id=message_id,
+                    )
+
                 if COPY_DELAY > 0:
                     await asyncio.sleep(COPY_DELAY)
                 return copied
@@ -926,6 +952,8 @@ async def receive_media(
                     message.bot,
                     message.chat.id,
                     message.message_id,
+                    file_id=file_id,
+                    file_type=file_type,
                 )
                 storage_message_id = int(copied.message_id)
             except Exception:
@@ -2203,7 +2231,7 @@ async def finalize_save(
         # PAID FILE -> MOVE FREE-COLLECTED MESSAGES TO STORAGE
         # =================================================
         # Media may have been collected before the user chose PAID. If so,
-        # copy each original message to storage now, sequentially, and only
+        # store each collected media to storage now, sequentially, and only
         # delete the original after the storage copy succeeds. FREE files
         # never enter this block and remain message_id/source_chat_id based.
         if is_paid:
@@ -2213,7 +2241,11 @@ async def finalize_save(
                 if source_chat_id and original_message_id:
                     try:
                         copied = await copy_to_storage(
-                            message.bot, int(source_chat_id), int(original_message_id)
+                            message.bot,
+                            int(source_chat_id),
+                            int(original_message_id),
+                            file_id=item.get("file_id"),
+                            file_type=item.get("type"),
                         )
                         item["message_id"] = int(copied.message_id)
                         item["source_chat_id"] = None
@@ -2222,7 +2254,7 @@ async def finalize_save(
                         except Exception:
                             pass
                     except Exception:
-                        logger.exception("PAID STORAGE MIGRATION ERROR | user=%s code=%s message=%s",user_id,code,original_message_id)
+                        logger.exception("PAID STORAGE MIGRATION ERROR | user=%s code=%s message=%s type=%s has_file_id=%s", user_id, code, original_message_id, item.get("type"), bool(item.get("file_id")))
                         await state.update_data(saving=False)
                         return await message.answer("⚠️ <b>Gagal memindahkan media ke storage.</b>\n\nFile belum dibuat. Silakan coba simpan lagi.",parse_mode="HTML")
 
