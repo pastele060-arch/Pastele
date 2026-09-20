@@ -82,6 +82,7 @@ from handlers.menu import router as menu_router
 from handlers.upfile import router as upfile_router
 from handlers.getfile import router as getfile_router
 from handlers.review_code import router as review_code_router
+from handlers.getreview import router as getreview_router
 # STORE
 from handlers.top import router as top_router
 from handlers.code import router as code_router
@@ -147,6 +148,7 @@ dp.include_router(menu_router)
 dp.include_router(upfile_router)
 dp.include_router(getfile_router)
 dp.include_router(review_code_router)
+dp.include_router(getreview_router)
 dp.include_router(page_router)
 dp.include_router(open_menu_router)
 dp.include_router(sendall_router)
