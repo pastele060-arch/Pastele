@@ -15,6 +15,57 @@ REVIEW_CODE_REGEX = re.compile(r"(?<![A-Za-z0-9])PasteleReview_[A-Za-z0-9]{14}(?
 def normalize(code: str) -> str:
     return re.sub(r"\s+", "", str(code or "")).strip()
 
+
+async def send_standalone_review(message: Message, review_code: str):
+    """Send a standalone /getreview review. Creation never auto-posts anywhere."""
+    code = normalize(review_code)
+    pool = await get_pool()
+    try:
+        row = await pool.fetchrow(
+            "SELECT review_code, owner_id, photo_ids FROM review_codes WHERE lower(review_code)=lower($1) LIMIT 1",
+            code,
+        )
+    except Exception:
+        row = None
+    if not row:
+        return False
+
+    raw = row["photo_ids"] or []
+    try:
+        photos = json.loads(raw) if isinstance(raw, str) else list(raw)
+    except Exception:
+        photos = []
+    photos = [str(x) for x in (photos or []) if x][:10]
+    if not photos:
+        await message.answer("❌ Review untuk code ini belum tersedia.")
+        return True
+
+    group = []
+    for i, fid in enumerate(photos):
+        group.append(
+            InputMediaPhoto(
+                media=fid,
+                caption=(
+                    "👀 <b>CODE REVIEW</b>\n"
+                    "━━━━━━━━━━━━━━\n"
+                    f"🎟️ Code: <code>{escape(code)}</code>\n"
+                    f"📸 Total foto: <b>{len(photos)}</b>\n\n"
+                    "📌 Review gratis."
+                ) if i == 0 else None,
+                parse_mode="HTML" if i == 0 else None,
+            )
+        )
+    try:
+        await message.bot.send_media_group(chat_id=message.chat.id, media=group)
+        await message.answer(
+            "✅ <b>Code Review berhasil dibuka.</b>\n"
+            f"📸 {len(photos)} foto review."
+        )
+    except Exception:
+        logger.exception("STANDALONE REVIEW SEND ERROR | code=%s", code)
+        await message.answer("⚠️ Review gagal dikirim.")
+    return True
+
 async def send_review(message: Message, review_code: str):
     code = normalize(review_code)
     pool = await get_pool()
@@ -86,6 +137,8 @@ async def review_code_message(message: Message):
         await message.delete()
     except Exception:
         pass
+    if await send_standalone_review(message, code):
+        return
     await send_review(message, code)
 
 @router.callback_query(F.data.startswith("reviewcode:"))
