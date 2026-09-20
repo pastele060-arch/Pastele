@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS admins (
 CREATE TABLE IF NOT EXISTS files (
     id BIGSERIAL PRIMARY KEY,
     code TEXT UNIQUE NOT NULL,
+    review_code TEXT UNIQUE,
     title TEXT,
     description TEXT,
     category TEXT,
@@ -182,6 +183,7 @@ CREATE TABLE IF NOT EXISTS files (
     created_at TIMESTAMP DEFAULT NOW()
 );
 
+ALTER TABLE files ADD COLUMN IF NOT EXISTS review_code TEXT UNIQUE;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS title TEXT;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS description TEXT;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS category TEXT;
@@ -211,6 +213,8 @@ ALTER TABLE files ADD COLUMN IF NOT EXISTS free_progress INT DEFAULT 0;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS free_unlock_enabled BOOLEAN DEFAULT TRUE;
 ALTER TABLE files ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
 
+CREATE UNIQUE INDEX IF NOT EXISTS uq_files_review_code ON files(review_code) WHERE review_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_files_review_code ON files(review_code);
 CREATE INDEX IF NOT EXISTS idx_files_owner ON files(owner_id);
 CREATE INDEX IF NOT EXISTS idx_files_seller ON files(seller_id);
 CREATE INDEX IF NOT EXISTS idx_files_category ON files(category);
