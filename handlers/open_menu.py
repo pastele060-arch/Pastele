@@ -55,16 +55,10 @@ async def _show_open_menu(call: CallbackQuery, code: str):
     if not exists:
         return await call.answer(l["not_found"], show_alert=True)
     await call.answer()
-    try:
-        await call.message.edit_text(
-            l["menu"], parse_mode="HTML",
-            reply_markup=open_keyboard(code, lang),
-        )
-    except Exception:
-        await call.message.answer(
-            l["menu"], parse_mode="HTML",
-            reply_markup=open_keyboard(code, lang),
-        )
+    # Never expose the media open menu before the canonical access check.
+    # This prevents a forged open_code callback from bypassing payment.
+    from handlers.getfile import process_code
+    return await process_code(call.message, code)
 
 # Keep both callback names for compatibility with Marketplace and typed-code flows.
 @router.callback_query(F.data.startswith("open:"))

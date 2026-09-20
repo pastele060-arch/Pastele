@@ -134,6 +134,20 @@ async def send_all(message, code: str, user_id: int | None = None, lang: str | N
         await message.answer("❌ Tidak ada media pada Code ini.")
         return
 
+    from utils.media_access import can_open_media
+    allowed, reason = await can_open_media(int(user_id or message.from_user.id), data)
+    if not allowed:
+        if reason == "payment_required":
+            from handlers.pay import paid_unlock_keyboard
+            price = int(data.get("price") or 0)
+            await message.answer(
+                f"🔒 <b>CODE MEDIA BERBAYAR</b>\n\n📦 Total Media: <b>{int(data.get('media_count') or len(medias))}</b>\n💰 Harga: <b>Rp{price:,}</b>\n\nSilakan bayar untuk membuka media.",
+                parse_mode="HTML", reply_markup=paid_unlock_keyboard(str(data.get("code")), "id")
+            )
+        else:
+            await message.answer("⭐ <b>Poin tidak cukup untuk membuka code ini.</b>", parse_mode="HTML")
+        return
+
     session_id = f"{message.chat.id}:{code}:{id(medias)}"
     session = {
         "id": session_id,

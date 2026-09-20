@@ -23,7 +23,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from config import CHANNEL_ID, STORAGE_CHANNEL_ID
+from config import CHANNEL_ID
 from database import get_pool
 from keyboards.join import join_kb
 from utils.force_sub import check_force_sub
@@ -48,10 +48,6 @@ UPDATE_DELAY = 0.7
 # Kecepatan utama didapat dari tidak memakai global copy lock.
 COPY_DELAY = 1.5
 
-# Maksimal copy storage bersamaan untuk seluruh bot.
-# 2 = aman dan cukup cepat.
-STORAGE_CONCURRENCY = 1
-
 # Channel review paid file.
 REVIEW_CHANNEL_ID = -1003993516320
 
@@ -71,10 +67,6 @@ _last_update: Dict[int, float] = {}
 
 _user_locks: Dict[int, asyncio.Lock] = {}
 _user_lock_refs: Dict[int, int] = {}
-
-_storage_semaphore = asyncio.Semaphore(
-    STORAGE_CONCURRENCY
-)
 
 _channel_send_lock = asyncio.Lock()
 _storage_ready = False
@@ -348,143 +340,6 @@ async def safe_update(
 
 
 # =========================================================
-# COPY TO STORAGE CHANNEL
-# =========================================================
-
-async def copy_to_storage(
-    bot,
-    from_chat_id: int,
-    message_id: int,
-    *,
-    file_id: Optional[str] = None,
-    file_type: Optional[str] = None,
-):
-    """
-    Store media ke storage channel.
-
-    Prefer file_id + file_type when available. This avoids the fragile
-    copyMessage path for media collected in a user's private chat and fixes
-    TelegramBadRequest: MEDIA_FILE_INVALID during FREE -> PAID migration.
-
-    message_id/from_chat_id remain supported as a fallback for older callers.
-    """
-
-    global _storage_ready
-
-    if not STORAGE_CHANNEL_ID:
-        raise RuntimeError("STORAGE_CHANNEL_ID belum dikonfigurasi")
-
-    try:
-        message_id = int(message_id)
-        from_chat_id = int(from_chat_id)
-    except (TypeError, ValueError):
-        raise ValueError("chat_id/message_id upload tidak valid")
-
-    async with _storage_semaphore:
-        # Preflight hanya sekali: memastikan bot benar-benar dapat mengakses
-        # storage channel. Ini mencegah error check_response yang berulang
-        # untuk setiap media jika channel ID/admin permission salah.
-        if not _storage_ready:
-            try:
-                await bot.get_chat(chat_id=STORAGE_CHANNEL_ID)
-                _storage_ready = True
-            except Exception as e:
-                logger.error(
-                    "STORAGE PREFLIGHT FAILED | channel=%s | error=%s",
-                    STORAGE_CHANNEL_ID, e,
-                )
-                raise RuntimeError(
-                    "Bot tidak dapat mengakses STORAGE_CHANNEL_ID. "
-                    "Pastikan bot menjadi admin di channel storage dan ID benar."
-                ) from e
-
-        retries = 0
-        while True:
-            try:
-                # Prefer the original Telegram file_id. Re-sending the file_id
-                # is more reliable than copy_message when the source is a
-                # private-chat message and prevents MEDIA_FILE_INVALID.
-                if file_id:
-                    if file_type == "photo":
-                        copied = await bot.send_photo(
-                            chat_id=STORAGE_CHANNEL_ID,
-                            photo=file_id,
-                        )
-                    elif file_type == "video":
-                        copied = await bot.send_video(
-                            chat_id=STORAGE_CHANNEL_ID,
-                            video=file_id,
-                        )
-                    elif file_type == "document":
-                        copied = await bot.send_document(
-                            chat_id=STORAGE_CHANNEL_ID,
-                            document=file_id,
-                        )
-                    else:
-                        copied = await bot.copy_message(
-                            chat_id=STORAGE_CHANNEL_ID,
-                            from_chat_id=from_chat_id,
-                            message_id=message_id,
-                        )
-                else:
-                    copied = await bot.copy_message(
-                        chat_id=STORAGE_CHANNEL_ID,
-                        from_chat_id=from_chat_id,
-                        message_id=message_id,
-                    )
-
-                if COPY_DELAY > 0:
-                    await asyncio.sleep(COPY_DELAY)
-                return copied
-
-            except TelegramRetryAfter as e:
-                retries += 1
-                retry_after = max(float(e.retry_after), 1.0)
-                logger.warning(
-                    "STORAGE FLOOD CONTROL | retry_after=%.2fs | retry=%s",
-                    retry_after, retries,
-                )
-                await asyncio.sleep(retry_after + 0.3)
-
-            except (TelegramServerError, TelegramNetworkError) as e:
-                retries += 1
-                if retries > 5:
-                    logger.exception(
-                        "STORAGE RETRY EXHAUSTED | from_chat=%s | message=%s",
-                        from_chat_id, message_id,
-                    )
-                    raise
-                wait = min(2 ** retries, 10)
-                logger.warning(
-                    "STORAGE TEMPORARY ERROR | retry=%s | wait=%ss | error=%s",
-                    retries, wait, e,
-                )
-                await asyncio.sleep(wait)
-
-            except TelegramBadRequest as e:
-                error = str(e).lower()
-                # Configuration/permission errors are permanent for this item.
-                logger.error(
-                    "STORAGE BAD REQUEST | from_chat=%s | message=%s | error=%s",
-                    from_chat_id, message_id, e,
-                )
-                if any(x in error for x in (
-                    "chat not found", "not enough rights", "have no rights",
-                    "message to copy not found", "message not found",
-                    "chat_id is empty",
-                )):
-                    raise
-                raise
-
-            except Exception:
-                logger.exception(
-                    "STORAGE COPY ERROR | from_chat=%s | message=%s",
-                    from_chat_id, message_id,
-                )
-                raise
-
-
-# =========================================================
 # GENERATE UNIQUE CODE
 # =========================================================
 
@@ -496,6 +351,21 @@ async def generate_code() -> str:
         suffix = "".join(secrets.choice(alphabet) for _ in range(14))
         code = f"Pastelebot_{suffix}"
         exists = await pool.fetchval("SELECT 1 FROM files WHERE LOWER(code)=LOWER($1) LIMIT 1", code)
+        if not exists:
+            return code
+
+
+async def generate_review_code() -> str:
+    """Generate a separate public code used only for free review/preview."""
+    pool = await get_pool()
+    alphabet = string.ascii_uppercase + string.digits
+    while True:
+        suffix = "".join(secrets.choice(alphabet) for _ in range(14))
+        code = f"PasteleReview_{suffix}"
+        exists = await pool.fetchval(
+            "SELECT 1 FROM files WHERE LOWER(review_code)=LOWER($1) LIMIT 1",
+            code,
+        )
         if not exists:
             return code
 
@@ -928,62 +798,25 @@ async def receive_media(
             )
 
         # -------------------------------------------------
-        # STORAGE POLICY
+        # FILE_ID STORAGE
         # -------------------------------------------------
-        # FREE uploads stay in the user's private chat. We keep the original
-        # message_id + source_chat_id so the bot does not fill the storage
-        # channel. The Telegram file_id is also retained because it is the
-        # reliable representation needed for media albums/Open Page.
-        # PAID uploads continue to use the storage channel.
-        upload_is_paid = bool(data.get("is_paid", False))
-        try:
-            from utils.user import get_user_status
-            user_level = await get_user_status(await get_pool(), user_id)
-        except Exception:
-            user_level = "free"
-
-        use_storage = upload_is_paid or user_level != "free"
-        storage_message_id = None
+        # Media is stored by Telegram file_id only. No storage channel,
+        # copy_message, or storage migration is used for uploads.
+        # file_id remains reusable by this bot after the original message
+        # is deleted, so the user's chat does not become the storage.
         source_chat_id = int(message.chat.id)
-
-        if use_storage:
-            try:
-                copied = await copy_to_storage(
-                    message.bot,
-                    message.chat.id,
-                    message.message_id,
-                    file_id=file_id,
-                    file_type=file_type,
-                )
-                storage_message_id = int(copied.message_id)
-            except Exception:
-                logger.exception("STORAGE ERROR | user=%s", user_id)
-                return await message.answer(
-                    "⚠️ <b>Gagal menyimpan media ke storage.</b>\n\n"
-                    "Media belum ditambahkan. Silakan coba lagi.",
-                    parse_mode="HTML",
-                )
 
         # -------------------------------------------------
         # APPEND
         # -------------------------------------------------
 
         media.append({
-
-            # For FREE: original user message id.
-            # For paid/VIP storage: copied storage message id.
-            "message_id": storage_message_id or int(message.message_id),
-
-            "source_chat_id": source_chat_id if not use_storage else None,
-
+            "message_id": int(message.message_id),
+            "source_chat_id": source_chat_id,
             "file_id": file_id,
-
             "type": file_type,
-
             "file_name": file_name,
-
             "file_size": file_size,
-
             "position": len(media) + 1,
         })
 
@@ -1005,10 +838,6 @@ async def receive_media(
 
         if progress_id:
 
-            storage_text = "☁️ Storage Channel" if any(
-                item.get("source_chat_id") is None for item in media
-            ) else "💬 Message ID (tanpa Storage)"
-
             await safe_update(
 
                 message.bot,
@@ -1021,8 +850,7 @@ async def receive_media(
                     "📦 <b>UPLOAD MODE</b>\n\n"
                     f"📁 Media : "
                     f"<b>{len(media)}/{MAX_MEDIA}</b>\n"
-                    f"💾 Penyimpanan : "
-                    f"<b>{storage_text}</b>\n\n"
+                    "💾 Penyimpanan : <b>Telegram file_id</b>\n\n"
                     "Kirim media lagi atau tekan "
                     "<b>STOP & SAVE</b>."
                 ),
@@ -1031,22 +859,21 @@ async def receive_media(
             )
 
         # -------------------------------------------------
-        # DELETE USER MESSAGE ONLY WHEN COPIED TO STORAGE
+        # DELETE ORIGINAL MESSAGE
         # -------------------------------------------------
-        # FREE uploads intentionally keep the original message alive because
-        # there is no storage-channel copy to retrieve from later.
-        if use_storage:
-            try:
-                await message.delete()
-            except Exception:
-                pass
+        # The Telegram file_id is already stored, so the original upload
+        # message is not needed as storage.
+        try:
+            await message.delete()
+        except Exception:
+            pass
 
         logger.info(
-            "MEDIA ADDED | user=%s | type=%s | total=%s | storage=%s | message_id=%s",
+            "MEDIA ADDED | user=%s | type=%s | total=%s | file_id=%s | message_id=%s",
             user_id,
             file_type,
             len(media),
-            use_storage,
+            file_id,
             message.message_id,
         )
 
@@ -1838,6 +1665,7 @@ async def send_paid_review(
     username: Optional[str],
     title: str,
     code: str,
+    review_code: str,
     price: int,
     media_count: int,
     review_photos: list,
@@ -1882,10 +1710,12 @@ async def send_paid_review(
         "━━━━━━━━━━━━━━\n"
         f"🤖 Bot: @{safe_bot_username}\n"
         f"📝 Judul: {safe_title}\n"
-        f"📦 Media: {media_count}\n"
+        f"📦 Total media: {media_count}\n"
+        f"💎 Media: <b>{'PAID' if price > 0 else 'FREE'}</b>\n"
+        f"👀 Code review: <code>{escape(review_code)}</code>\n"
+        f"📦 Code media: <code>{safe_code}</code>\n"
         f"💵 Harga: <b>{rupiah(price)}</b>\n"
-        f"🔑 Code: <code>{safe_code}</code>\n"
-        "🛒 File tersedia untuk dibeli."
+        "🛒 Code media digunakan untuk membuka media; code review gratis untuk melihat review."
     )
 
     # -----------------------------------------------------
@@ -1925,6 +1755,22 @@ async def send_paid_review(
         await bot.send_media_group(
             chat_id=REVIEW_CHANNEL_ID,
             media=media_group,
+        )
+        await bot.send_message(
+            chat_id=REVIEW_CHANNEL_ID,
+            text=(
+                f"📝 <b>{safe_title}</b>\n"
+                f"👀 Code review: <code>{escape(review_code)}</code>\n"
+                f"📦 Code media: <code>{safe_code}</code>\n"
+                f"📦 Total media: <b>{media_count}</b>\n"
+                f"💎 Media: <b>{'PAID' if price > 0 else 'FREE'}</b>\n"
+                f"🤖 Bot: @{safe_bot_username}"
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👀 Buka Review", url=f"https://t.me/{bot_username}?start={review_code}")],
+                [InlineKeyboardButton(text="📦 Buka Code Media", url=f"https://t.me/{bot_username}?start={safe_code}")],
+            ]),
         )
 
         logger.info(
@@ -1975,6 +1821,7 @@ async def send_upload_log(
     user_id: int,
     title: str,
     code: str,
+    review_code: Optional[str],
     media_count: int,
     is_paid: bool,
     price: int,
@@ -2021,9 +1868,11 @@ async def send_upload_log(
             f"🤖 Bot: @{safe_bot_username}\n"
             f"🆔 ID: <code>{mask_user_id(user_id)}</code>\n"
             f"📝 Judul: {safe_title}\n"
-            f"📦 Media: {media_count}\n"
-            f"💎 Status: {mode}\n"
-            f"🔑 Code: <code>{safe_code}</code>"
+            f"👀 Code review: <code>{escape(review_code or '-')}</code>\n"
+            f"📦 Code media: <code>{safe_code}</code>\n"
+            f"📦 Total media: {media_count}\n"
+            f"💎 Media: <b>{'PAID' if is_paid else 'FREE'}</b>\n"
+            f"💰 Harga: {rupiah(price) if is_paid else 'Gratis'}"
         )
 
         await bot.send_message(
@@ -2224,39 +2073,9 @@ async def finalize_save(
         # =================================================
 
         code = await generate_code()
+        review_code = await generate_review_code() if review_photos else None
 
         media_count = len(media)
-
-        # =================================================
-        # PAID FILE -> MOVE FREE-COLLECTED MESSAGES TO STORAGE
-        # =================================================
-        # Media may have been collected before the user chose PAID. If so,
-        # store each collected media to storage now, sequentially, and only
-        # delete the original after the storage copy succeeds. FREE files
-        # never enter this block and remain message_id/source_chat_id based.
-        if is_paid:
-            for item in media:
-                source_chat_id = item.get("source_chat_id")
-                original_message_id = item.get("message_id")
-                if source_chat_id and original_message_id:
-                    try:
-                        copied = await copy_to_storage(
-                            message.bot,
-                            int(source_chat_id),
-                            int(original_message_id),
-                            file_id=item.get("file_id"),
-                            file_type=item.get("type"),
-                        )
-                        item["message_id"] = int(copied.message_id)
-                        item["source_chat_id"] = None
-                        try:
-                            await message.bot.delete_message(int(source_chat_id), int(original_message_id))
-                        except Exception:
-                            pass
-                    except Exception:
-                        logger.exception("PAID STORAGE MIGRATION ERROR | user=%s code=%s message=%s type=%s has_file_id=%s", user_id, code, original_message_id, item.get("type"), bool(item.get("file_id")))
-                        await state.update_data(saving=False)
-                        return await message.answer("⚠️ <b>Gagal memindahkan media ke storage.</b>\n\nFile belum dibuat. Silakan coba simpan lagi.",parse_mode="HTML")
 
         # =================================================
         # JSON
@@ -2380,10 +2199,10 @@ async def finalize_save(
                 # =========================================
 
                 await conn.execute(
-
                     """
                     INSERT INTO files (
                         code,
+                        review_code,
                         title,
                         creator,
                         media,
@@ -2402,50 +2221,23 @@ async def finalize_save(
                         favorite_count
                     )
                     VALUES (
-                        $1,
-                        $2,
-                        $3,
-                        $4,
-                        $5,
-                        $6,
-                        $7,
-                        $8,
-                        $9,
-                        NULL,
-                        $10,
-                        $11,
-                        $12,
-                        $13,
-                        0,
-                        0,
-                        0
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        NULL, $11, $12, $13, $14, 0, 0, 0
                     )
                     """,
-
                     code,
-
+                    review_code,
                     title,
-
                     fullname,
-
                     media_json,
-
                     share_media,
-
                     share_media,
-
                     user_id,
-
                     user_id,
-
                     media_count,
-
                     is_paid,
-
                     price,
-
                     payment_provider,
-
                     review_json,
                 )
 
@@ -2667,10 +2459,13 @@ async def finalize_save(
         # =================================================
 
         lang = await get_user_language(user_id)
+        review_line_id = f"\n👀 <b>Code Review</b>: <code>{escape(review_code)}</code>" if review_code else ""
+        review_line_en = f"\n👀 <b>Review Code</b>: <code>{escape(review_code)}</code>" if review_code else ""
+        review_line_zh = f"\n👀 <b>Review Code</b>：<code>{escape(review_code)}</code>" if review_code else ""
         success_text = {
-            "id": (f"✅ <b>FILE BERHASIL DISIMPAN</b>\n\n📝 <b>Judul</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Isi</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}\n\n🔑 <b>Code</b>: <code>{safe_code}</code>"),
-            "en": (f"✅ <b>FILE SAVED SUCCESSFULLY</b>\n\n📝 <b>Title</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Content</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}\n\n🔑 <b>Code</b>: <code>{safe_code}</code>"),
-            "zh": (f"✅ <b>文件保存成功</b>\n\n📝 <b>标题</b>：{safe_title}\n📦 <b>媒体数量</b>：{media_count}\n📁 <b>内容</b>：{escape(files_info)}\n💎 <b>状态</b>：{mode}\n\n🔑 <b>代码</b>：<code>{safe_code}</code>"),
+            "id": (f"✅ <b>FILE BERHASIL DISIMPAN</b>\n\n📝 <b>Judul</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Isi</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}{review_line_id}\n📦 <b>Code Media</b>: <code>{safe_code}</code>"),
+            "en": (f"✅ <b>FILE SAVED SUCCESSFULLY</b>\n\n📝 <b>Title</b>: {safe_title}\n📦 <b>Total Media</b>: {media_count}\n📁 <b>Content</b>: {escape(files_info)}\n💎 <b>Status</b>: {mode}{review_line_en}\n📦 <b>Media Code</b>: <code>{safe_code}</code>"),
+            "zh": (f"✅ <b>文件保存成功</b>\n\n📝 <b>标题</b>：{safe_title}\n📦 <b>媒体数量</b>：{media_count}\n📁 <b>内容</b>：{escape(files_info)}\n💎 <b>状态</b>：{mode}{review_line_zh}\n📦 <b>媒体代码</b>：<code>{safe_code}</code>"),
         }
         await message.answer(success_text.get(lang, success_text["id"]), parse_mode="HTML")
 
@@ -2693,6 +2488,8 @@ async def finalize_save(
                     title=title,
 
                     code=code,
+
+                    review_code=review_code,
 
                     price=price,
 
@@ -2720,6 +2517,7 @@ async def finalize_save(
                 user_id=user_id,
                 title=title,
                 code=code,
+                review_code=review_code,
                 media_count=media_count,
                 is_paid=is_paid,
                 price=price,

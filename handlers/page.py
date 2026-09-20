@@ -97,6 +97,20 @@ async def send_page(message, code: str, page_no: int = 1):
         await message.answer("❌ Code tidak ditemukan.")
         return False
 
+    from utils.media_access import can_open_media
+    allowed, reason = await can_open_media(call_user_id := message.from_user.id, data)
+    if not allowed:
+        if reason == "payment_required":
+            from handlers.pay import paid_unlock_keyboard
+            price = int(data.get("price") or 0)
+            await message.answer(
+                f"🔒 <b>CODE MEDIA BERBAYAR</b>\n\n📦 Total Media: <b>{int(data.get('media_count') or 0)}</b>\n💰 Harga: <b>Rp{price:,}</b>\n\nSilakan bayar untuk membuka media.",
+                parse_mode="HTML", reply_markup=paid_unlock_keyboard(str(data.get("code")), "id")
+            )
+        else:
+            await message.answer("⭐ <b>Poin tidak cukup untuk membuka code ini.</b>", parse_mode="HTML")
+        return False
+
     total = len(medias)
     if total == 0:
         await message.answer("❌ Tidak ada media pada Code ini.")

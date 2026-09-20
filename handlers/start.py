@@ -388,11 +388,17 @@ async def process_start(
         except Exception:
             pass
 
-        # Import setelah diperlukan.
-        # IMPORTANT: reward is granted only AFTER the code is actually
-        # opened through the canonical Get File flow.
-        from handlers.getfile import process_code
-        result = await process_code(message, code)
+        # Review codes are public preview codes and never enter the paid media
+        # access flow. Media codes continue through the canonical payment gate.
+        if code.lower().startswith("pastelereview_"):
+            from handlers.review_code import send_review
+            result = await send_review(message, code)
+        else:
+            # Import setelah diperlukan.
+            # IMPORTANT: reward is granted only AFTER the code is actually
+            # opened through the canonical Get File flow.
+            from handlers.getfile import process_code
+            result = await process_code(message, code)
 
         if pending_share_owner and pending_share_code:
             try:
