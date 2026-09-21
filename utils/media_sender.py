@@ -1,9 +1,8 @@
 """
 Canonical media delivery helpers for Pastele.
 
-All media delivery goes through stored Telegram message IDs when available.
-FREE/source media can use source_chat_id + message_id.
-Paid/storage media uses STORAGE_CHANNEL_ID + storage_message_id.
+New media delivery uses Telegram file_id as the canonical storage.
+Legacy message-id fallbacks are retained only for old database rows.
 
 The helper is deliberately sequential and RetryAfter-aware.
 """
@@ -128,29 +127,20 @@ def media_message_id(media: dict) -> Optional[int]:
 
 
 async def deliver_one(bot, chat_id: int, media: dict, caption: Optional[str] = None):
+    """Deliver media using Telegram file_id as the canonical storage.
+
+    Source/storage message IDs are retained only for backwards compatibility
+    with old rows. New uploads always use file_id first.
     """
-    Durable order:
-      1) storage message
-      2) original source message
-      3) file_id
-    """
-    mid = media_message_id(media)
+    result = await safe_send_file_id(bot, chat_id, media, caption=caption)
+    if result:
+        return result
+
+    # Legacy fallback for old database rows created before file_id-only storage.
     source_chat = media.get("source_chat_id")
-
-    # A source_chat_id means message_id belongs to the original source.
+    mid = media_message_id(media)
     if source_chat and mid:
-        result = await safe_copy_from_source(
-            bot, chat_id, int(source_chat), mid, caption=caption
-        )
-        if result:
-            return result
-
-    # No source chat => the message id is a storage/channel message.
-    if mid and not source_chat:
-        result = await safe_copy_from_storage(
-            bot, chat_id, mid, caption=caption
-        )
-        if result:
-            return result
-
-    return await safe_send_file_id(bot, chat_id, media, caption=caption)
+        return await safe_copy_from_source(bot, chat_id, int(source_chat), mid, caption=caption)
+    if mid:
+        return await safe_copy_from_storage(bot, chat_id, mid, caption=caption)
+    return None

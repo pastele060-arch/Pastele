@@ -9,7 +9,7 @@ CHECKIN_REWARDS = [
     Decimal("0.5"), Decimal("0.5"), Decimal("1"),
     Decimal("1"), Decimal("1.5"), Decimal("2"), Decimal("3")
 ]
-MEDIA_COST = Decimal("1.20")
+MEDIA_COST = Decimal("1")
 # Upload itself does NOT cost points. Reward is granted only for batches of 50 media.
 UPLOAD_REWARD_PER_50 = Decimal("10")
 
@@ -50,6 +50,51 @@ async def charge_media(pool,user_id:int,count:int,code:str,offset:int=0):
     amount=(MEDIA_COST*Decimal(count)).quantize(Decimal("0.01"))
     ref=f"media:{user_id}:{code}:{offset}:{count}"
     return await charge_points(pool,user_id,amount,"media_open",ref,f"Open {count} media from {code}")
+
+
+async def unlock_free_code(pool, user_id: int, code: str, media_count: int):
+    """Unlock a free code exactly once. Charges 1 point per media.
+
+    Returns (ok, balance, charged). Repeated opens of the same code by the
+    same user are idempotent and do not charge again.
+    """
+    uid = int(user_id)
+    count = max(0, int(media_count or 0))
+    normalized = str(code or '').strip()
+    if not normalized or count <= 0:
+        return True, await get_points(pool, uid), Decimal('0')
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            existing = await conn.fetchval(
+                "SELECT 1 FROM point_code_unlocks WHERE user_id=$1 AND LOWER(code)=LOWER($2) FOR UPDATE",
+                uid, normalized,
+            )
+            if existing:
+                bal = await conn.fetchval("SELECT points FROM users WHERE user_id=$1", uid)
+                return True, Decimal(str(bal or 0)), Decimal('0')
+            row = await conn.fetchrow("SELECT points FROM users WHERE user_id=$1 FOR UPDATE", uid)
+            if not row:
+                return False, Decimal('0'), Decimal(count)
+            bal = Decimal(str(row['points'] or 0))
+            cost = (MEDIA_COST * Decimal(count)).quantize(Decimal('0.01'))
+            if bal < cost:
+                return False, bal, cost
+            new = bal - cost
+            await conn.execute(
+                "UPDATE users SET points=$1,updated_at=NOW() WHERE user_id=$2",
+                new, uid,
+            )
+            await conn.execute(
+                "INSERT INTO point_code_unlocks(user_id,code,amount) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+                uid, normalized, cost,
+            )
+            ref = f"media_unlock:{uid}:{normalized.lower()}"
+            await conn.execute(
+                """INSERT INTO point_transactions(user_id,amount,balance_after,type,reference,description)
+                   VALUES($1,$2,$3,'media_open',$4,$5) ON CONFLICT(reference) DO NOTHING""",
+                uid, -cost, new, ref, f"Open free code {normalized} ({count} media)",
+            )
+            return True, new, cost
 
 async def unlock_paid_code(pool,user_id:int,code:str,price:int):
     """Charge paid-code point cost exactly once. Returns (ok,balance)."""
