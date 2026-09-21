@@ -91,14 +91,17 @@ def _album_items(items, code, offset, total):
     return result
 
 
-async def send_page(message, code: str, page_no: int = 1):
+async def send_page(message, code: str, page_no: int = 1, user_id: int | None = None):
     data, medias = await _load(code)
     if not data:
         await message.answer("❌ Code tidak ditemukan.")
         return False
 
     from utils.media_access import can_open_media
-    allowed, reason = await can_open_media(call_user_id := message.from_user.id, data)
+    # Callback buttons belong to a bot message, so message.from_user is the BOT.
+    # Always use the Telegram user who pressed the button for access checks.
+    opener_id = int(user_id) if user_id else int(message.from_user.id)
+    allowed, reason = await can_open_media(opener_id, data)
     if not allowed:
         if reason == "payment_required":
             from handlers.pay import paid_unlock_keyboard
@@ -174,8 +177,9 @@ async def page_handler(call: CallbackQuery):
         return
 
     _last_page[key] = now
-    await call.answer()
-    # Immediate localized loading state masks DB/media lookup latency.
+    await call.answer("⏳ Membuka media...")
+    # Do not replace the original menu bubble with a permanent loading message.
+    # Use a short-lived status message instead, then remove it after delivery.
     try:
         pool = await get_pool()
         lang = (await pool.fetchval(
@@ -188,8 +192,21 @@ async def page_handler(call: CallbackQuery):
         "en": "🔎 <b>Searching Code Media...</b>\n\n⏳ Please wait a moment...",
         "zh": "🔎 <b>正在查找 Code 媒体...</b>\n\n⏳ 请稍候...",
     }.get(lang, "🔎 <b>Mencari Media Code...</b>\n\n⏳ Mohon tunggu sebentar...")
+    status = None
     try:
-        await call.message.edit_text(loading, parse_mode="HTML")
+        status = await call.message.answer(loading, parse_mode="HTML")
+        await send_page(call.message, code, page_no, user_id=call.from_user.id)
     except Exception:
-        pass
-    await send_page(call.message, code, page_no)
+        import logging
+        logging.getLogger(__name__).exception("PAGE OPEN ERROR | code=%s | user=%s", code, call.from_user.id)
+        if status:
+            try:
+                await status.edit_text("❌ Gagal membuka media. Silakan coba lagi.")
+            except Exception:
+                pass
+    finally:
+        if status:
+            try:
+                await status.delete()
+            except Exception:
+                pass

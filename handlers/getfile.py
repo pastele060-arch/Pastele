@@ -786,25 +786,60 @@ async def process_code(
 # ============================================================
 # A CODE can arrive from anywhere in the chat, not only after pressing
 # Get File. It always enters the same process_code() pipeline.
-@router.message(F.text.regexp(CODE_REGEX))
+@router.message(F.text)
 async def receive_code_global(
     message: Message,
     state: FSMContext,
 ):
-    user_id = int(message.from_user.id)
-    code_match = CODE_REGEX.search(message.text or "")
-    if not code_match:
+    """
+    Direct CODE entry.
+
+    A CODE typed/sent directly in chat must behave exactly like
+    entering the CODE through the Get File menu.  It must NOT enter
+    the Open Page/Open All loading flow and must never show
+    "Mencari Media Code..." merely because the CODE was sent directly.
+
+    We accept the configured Pastelebot_ format and the legacy
+    Jsshowbot_ format so existing shared codes are handled too.
+    """
+    text = (message.text or "").strip()
+    if not text:
         return
-    code = normalize_code(code_match.group())
-    try:
-        await message.delete()
-    except Exception:
-        pass
-    try:
-        await state.clear()
-    except Exception:
-        pass
-    return await process_code(message, code)
+
+    patterns = [
+        CODE_REGEX,
+        re.compile(
+            r"(?<![A-Za-z0-9])Jsshowbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ]
+
+    match = None
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            break
+
+    if not match:
+        return
+
+    code = normalize_code(match.group())
+
+    user_id = int(message.from_user.id)
+    async with user_lock(user_id):
+        try:
+            await message.delete()
+        except Exception:
+            pass
+
+        try:
+            await state.clear()
+        except Exception:
+            pass
+
+        # EXACTLY the same canonical Get File pipeline used by the
+        # Get File -> enter CODE flow.
+        return await process_code(message, code)
 
 
 # ============================================================
