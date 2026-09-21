@@ -375,7 +375,7 @@ async def open_file_by_code(
     """
 
     code = normalize_code(code)
-    opener_id = int(user_id if user_id is not None else opener_id)
+    opener_id = int(user_id if user_id is not None else message.from_user.id)
 
     if not code:
         await state.clear()
@@ -755,6 +755,8 @@ async def process_code(
     """
 
     code = normalize_code(code)
+    if user_id is None:
+        user_id = int(message.from_user.id)
 
     class DummyState:
 
