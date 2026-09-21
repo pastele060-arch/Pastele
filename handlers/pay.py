@@ -2565,7 +2565,7 @@ async def create_manual_payment(
     paid = await get_paid_purchase(user_id, code)
     if paid:
         from handlers.getfile import process_code
-        return await process_code(call.message, code, paid_override=True)
+        return await process_code(call.message, code, paid_override=True, user_id=call.from_user.id)
 
     # Reuse an existing pending manual transaction if one exists.
     existing = await get_active_method_purchase(user_id, code, "MANUAL-")
@@ -2586,7 +2586,7 @@ async def create_manual_payment(
 
     if result.get("already_paid"):
         from handlers.getfile import process_code
-        return await process_code(call.message, code, paid_override=True)
+        return await process_code(call.message, code, paid_override=True, user_id=call.from_user.id)
 
     if result.get("existing"):
         existing_method = purchase_method(purchase)

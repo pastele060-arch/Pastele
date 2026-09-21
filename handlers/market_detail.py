@@ -27,7 +27,7 @@ async def market_detail(call: CallbackQuery):
     code=call.data.split(":",1)[1].strip()
     try:
         from handlers.getfile import process_code
-        return await process_code(call.message,code)
+        return await process_code(call.message,code,user_id=call.from_user.id)
     except Exception:
         logger.exception("MARKET -> GETFILE ERROR | code=%s",code)
         return await call.message.answer("❌ Gagal membuka code.")
@@ -39,7 +39,7 @@ async def free_open(call: CallbackQuery):
     await call.answer()
     code=call.data.split(":",1)[1].strip()
     from handlers.getfile import process_code
-    return await process_code(call.message,code)
+    return await process_code(call.message,code,user_id=call.from_user.id)
 # ============================================================
 # FREE SHARE / CHECK PROGRESS
 # ============================================================

@@ -368,17 +368,19 @@ async def open_file_by_code(
     code: str,
     state: FSMContext,
     paid_override: bool = False,
+    user_id: int | None = None,
 ):
     """
     Membuka file berdasarkan code.
     """
 
     code = normalize_code(code)
+    opener_id = int(user_id if user_id is not None else opener_id)
 
     if not code:
         await state.clear()
 
-        lang = await get_user_language(message.from_user.id)
+        lang = await get_user_language(opener_id)
         return await message.answer({"id":"❌ CODE tidak valid.","en":"❌ Invalid code.","zh":"❌ 代码无效。"}.get(lang,"❌ CODE tidak valid."))
 
     pool = await get_pool()
@@ -413,7 +415,7 @@ async def open_file_by_code(
 
         await state.clear()
 
-        lang = await get_user_language(message.from_user.id)
+        lang = await get_user_language(opener_id)
         return await message.answer(translate(lang, "code_not_found").replace("*", "", 2))
 
     # ========================================================
@@ -428,7 +430,7 @@ async def open_file_by_code(
 
         await state.clear()
 
-        lang = await get_user_language(message.from_user.id)
+        lang = await get_user_language(opener_id)
         return await message.answer(translate(lang, "file_empty").replace("*", "", 2))
 
     # ========================================================
@@ -445,7 +447,7 @@ async def open_file_by_code(
 
                 await state.clear()
 
-                lang = await get_user_language(message.from_user.id)
+                lang = await get_user_language(opener_id)
                 return await message.answer({"id":"❌ File sudah kadaluarsa.","en":"❌ File has expired.","zh":"❌ 文件已过期。"}.get(lang,"❌ File sudah kadaluarsa."))
 
         except Exception:
@@ -466,7 +468,7 @@ async def open_file_by_code(
     try:
 
         owner = (
-            int(message.from_user.id)
+            int(opener_id)
             == int(owner_id)
         )
 
@@ -498,14 +500,14 @@ async def open_file_by_code(
 
         user_level = await get_user_status(
             pool,
-            message.from_user.id,
+            opener_id,
         )
 
     except Exception:
 
         logger.exception(
             "GET USER STATUS ERROR | user=%s",
-            message.from_user.id,
+            opener_id,
         )
 
         user_level = None
@@ -530,14 +532,14 @@ async def open_file_by_code(
             WHERE chat_id = $1
             LIMIT 1
             """,
-            message.from_user.id,
+            opener_id,
         ) or False
 
     except Exception:
 
         logger.exception(
             "CREATOR ACCESS CHECK ERROR | user=%s",
-            message.from_user.id,
+            opener_id,
         )
 
         creator_access = False
@@ -563,7 +565,7 @@ async def open_file_by_code(
                   AND status = 'paid'
             )
             """,
-            message.from_user.id,
+            opener_id,
             code,
         )
 
@@ -572,7 +574,7 @@ async def open_file_by_code(
         logger.exception(
             "PURCHASE ACCESS CHECK ERROR | "
             "user=%s | code=%s",
-            message.from_user.id,
+            opener_id,
             code,
         )
 
@@ -613,7 +615,7 @@ async def open_file_by_code(
                 DO NOTHING
                 RETURNING user_id
                 """,
-                message.from_user.id,
+                opener_id,
                 file["code"],
             )
 
@@ -648,26 +650,16 @@ async def open_file_by_code(
     await state.clear()
 
     # ========================================================
-    # ACCESS / POINT GATE
+    # CANONICAL ACCESS / POINT GATE
     # ========================================================
-    # FREE: entry requires media_count points.
-    # PAID: user must either have a paid purchase OR explicitly unlock
-    # with points. Payment and points are two separate unlock methods.
-    lang = await get_user_language(message.from_user.id)
+    lang = await get_user_language(opener_id)
+    from utils.media_access import can_open_media, reward_owner_for_open
+    access_file = dict(file)
+    access_file["media_count"] = len(media)
+    allowed, reason = await can_open_media(opener_id, access_file, paid_override=paid_override)
 
-    if is_paid and not owner:
-        paid_purchase = bool(access) or bool(paid_override)
-        point_unlocked = False
-        try:
-            point_unlocked = bool(await pool.fetchval(
-                """SELECT EXISTS(SELECT 1 FROM point_code_unlocks
-                   WHERE user_id=$1 AND LOWER(TRIM(code))=LOWER(TRIM($2)))""",
-                message.from_user.id, file["code"]
-            ))
-        except Exception:
-            logger.exception("PAID POINT UNLOCK CHECK ERROR | code=%s", file["code"])
-
-        if not paid_purchase and not point_unlocked:
+    if not allowed:
+        if reason == "payment_required":
             from handlers.pay import paid_unlock_keyboard
             txt = {
                 "id": f"🔒 <b>FILE BERBAYAR</b>\n\n🔑 CODE: <code>{file['code']}</code>\n💰 Harga: <b>Rp {int(price):,}</b>\n📦 Media: <b>{len(media)}</b>\n\nPilih cara membuka file:",
@@ -675,19 +667,20 @@ async def open_file_by_code(
                 "zh": f"🔒 <b>付费文件</b>\n\n🔑 代码：<code>{file['code']}</code>\n💰 价格：<b>Rp {int(price):,}</b>\n📦 媒体：<b>{len(media)}</b>\n\n请选择解锁方式：",
             }
             return await message.answer(txt.get(lang, txt["id"]), parse_mode="HTML", reply_markup=paid_unlock_keyboard(file["code"], lang))
-
-    elif not is_paid and not owner and not bool(creator_access) and user_level not in ("vip", "vvip"):
         from utils.points import get_points, fmt_points
-        points = await get_points(pool, message.from_user.id)
+        points = await get_points(pool, opener_id)
         required = len(media)
-        if points < required:
-            txt={
-                "id":f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini berisi <b>{required} media</b> dan membutuhkan minimal <b>{required} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.\n\nKumpulkan poin lewat Cek In, upload media, atau Buy Poin.",
-                "en":f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code contains <b>{required} media</b> and requires at least <b>{required} points</b>.\nYour points: <b>{fmt_points(points)}</b>.\n\nEarn points by check-in, uploading media, or buying points.",
-                "zh":f"⭐ <b>积分不足</b>\n\n此代码包含 <b>{required} 个媒体</b>，至少需要 <b>{required} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。",
-            }
-            kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={"id":"⭐ Cek Poin","en":"⭐ Points","zh":"⭐ 积分"}.get(lang,"⭐ Cek Poin"),callback_data="points")]])
-            return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
+        txt = {
+            "id": f"⭐ <b>POIN TIDAK CUKUP</b>\n\nCode ini berisi <b>{required} media</b> dan membutuhkan <b>{required} poin</b>.\nPoin kamu: <b>{fmt_points(points)}</b>.",
+            "en": f"⭐ <b>NOT ENOUGH POINTS</b>\n\nThis code contains <b>{required} media</b> and requires <b>{required} points</b>.\nYour points: <b>{fmt_points(points)}</b>.",
+            "zh": f"⭐ <b>积分不足</b>\n\n此代码包含 <b>{required} 个媒体</b>，需要 <b>{required} 积分</b>。\n你的积分：<b>{fmt_points(points)}</b>。",
+        }
+        kb=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text={"id":"⭐ Cek Poin","en":"⭐ Points","zh":"⭐ 积分"}.get(lang,"⭐ Cek Poin"),callback_data="points")]])
+        return await message.answer(txt.get(lang,txt["id"]),parse_mode="HTML",reply_markup=kb)
+
+    # A successful non-owner open is recorded once and rewards the owner.
+    if reason != "owner":
+        await reward_owner_for_open(opener_id, access_file)
 
     # ========================================================
     # OPEN FILE
@@ -711,7 +704,7 @@ async def open_file_by_code(
         file["title"] or "Tanpa Judul"
     )
 
-    lang = await get_user_language(message.from_user.id)
+    lang = await get_user_language(opener_id)
     found_text = {
         "id": f"✅ <b>FILE DITEMUKAN</b>\n\n📝 Judul: <b>{title}</b>\n📦 Total Media: <b>{len(media)}</b>\n\nPilih metode pengiriman:",
         "en": f"✅ <b>FILE FOUND</b>\n\n📝 Title: <b>{title}</b>\n📦 Total Media: <b>{len(media)}</b>\n\nChoose a delivery method:",
@@ -755,6 +748,7 @@ async def process_code(
     message: Message,
     code: str,
     paid_override: bool = False,
+    user_id: int | None = None,
 ):
     """
     Compatibility helper untuk pemanggilan dari handler lain.
@@ -778,6 +772,7 @@ async def process_code(
         code=code,
         state=DummyState(),
         paid_override=paid_override,
+        user_id=user_id,
     )
 
 
@@ -877,9 +872,9 @@ async def receive_code(
             message.text or ""
         ).strip()
 
-        match = CODE_REGEX.search(
-            text
-        )
+        match = CODE_REGEX.search(text)
+        if not match:
+            match = re.search(r"(?<![A-Za-z0-9])Jsshowbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])", text, re.IGNORECASE)
 
         # ====================================================
         # INVALID CODE

@@ -58,7 +58,7 @@ async def _show_open_menu(call: CallbackQuery, code: str):
     # Never expose the media open menu before the canonical access check.
     # This prevents a forged open_code callback from bypassing payment.
     from handlers.getfile import process_code
-    return await process_code(call.message, code)
+    return await process_code(call.message, code, user_id=call.from_user.id)
 
 # Keep both callback names for compatibility with Marketplace and typed-code flows.
 @router.callback_query(F.data.startswith("open:"))

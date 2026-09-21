@@ -135,7 +135,9 @@ async def send_all(message, code: str, user_id: int | None = None, lang: str | N
         return
 
     from utils.media_access import can_open_media
-    allowed, reason = await can_open_media(int(user_id or message.from_user.id), data)
+    opener_id = int(user_id or message.from_user.id)
+    data["media_count"] = len(medias)
+    allowed, reason = await can_open_media(opener_id, data)
     if not allowed:
         if reason == "payment_required":
             from handlers.pay import paid_unlock_keyboard
@@ -147,6 +149,13 @@ async def send_all(message, code: str, user_id: int | None = None, lang: str | N
         else:
             await message.answer("⭐ <b>Poin tidak cukup untuk membuka code ini.</b>", parse_mode="HTML")
         return
+
+    if reason != "owner":
+        try:
+            from utils.media_access import reward_owner_for_open
+            await reward_owner_for_open(opener_id, data)
+        except Exception:
+            pass
 
     session_id = f"{message.chat.id}:{code}:{id(medias)}"
     session = {

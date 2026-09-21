@@ -101,6 +101,7 @@ async def send_page(message, code: str, page_no: int = 1, user_id: int | None = 
     # Callback buttons belong to a bot message, so message.from_user is the BOT.
     # Always use the Telegram user who pressed the button for access checks.
     opener_id = int(user_id) if user_id else int(message.from_user.id)
+    data["media_count"] = len(medias)
     allowed, reason = await can_open_media(opener_id, data)
     if not allowed:
         if reason == "payment_required":
@@ -113,6 +114,13 @@ async def send_page(message, code: str, page_no: int = 1, user_id: int | None = 
         else:
             await message.answer("⭐ <b>Poin tidak cukup untuk membuka code ini.</b>", parse_mode="HTML")
         return False
+
+    if reason != "owner":
+        try:
+            from utils.media_access import reward_owner_for_open
+            await reward_owner_for_open(opener_id, data)
+        except Exception:
+            pass
 
     total = len(medias)
     if total == 0:
