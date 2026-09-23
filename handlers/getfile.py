@@ -784,8 +784,13 @@ async def process_code(
 # A CODE can arrive from anywhere in the chat, not only after pressing
 # Get File. It always enters the same process_code() pipeline.
 @router.message(
-    F.text,
-    ~F.text.regexp(re.compile(r"(?<![A-Za-z0-9])PasteleReview_[A-Za-z0-9]{14}(?![A-Za-z0-9])", re.IGNORECASE)),
+    F.text.regexp(CODE_REGEX)
+    | F.text.regexp(
+        re.compile(
+            r"(?<![A-Za-z0-9])Jsshowbot_[A-Za-z0-9]{14}(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        )
+    )
 )
 async def receive_code_global(
     message: Message,
