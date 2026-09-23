@@ -788,6 +788,10 @@ async def receive_code_global(
     message: Message,
     state: FSMContext,
 ):
+    # IMPORTANT: Review codes are handled by review_code.py.
+    # Do not let the global Get File handler consume them first.
+    if (message.text or "").strip().lower().startswith("pastelereview_"):
+        return
     """
     Direct CODE entry.
 
